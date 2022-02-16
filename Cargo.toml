@@ -1,0 +1,15 @@
+[package]
+name = "rust"
+version = "0.1.1"
+authors = ["walley <walley@walley.org>"]
+edition = "2018"
+features = ["wide"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+pancurses = "0.16.1"
+ncurses = { version = "5.101.0", features = ["wide"] }
+rand = "0.8.4"
+cursive = "0.16"
+
