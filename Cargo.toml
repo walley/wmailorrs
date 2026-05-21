@@ -1,15 +1,26 @@
 [package]
-name = "rust"
-version = "0.1.1"
-authors = ["walley <walley@walley.org>"]
-edition = "2018"
-features = ["wide"]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+name = "wmailor"
+version = "0.1.0"
+edition = "2021"
+description = "Text-based IMAP admin client — raw source only, Turbo Vision menus"
+license = "MIT"
 
 [dependencies]
-pancurses = "0.16.1"
-ncurses = { version = "5.101.0", features = ["wide"] }
-rand = "0.8.4"
-cursive = "0.16"
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+crossterm = "0.28"
+directories = "5"
+encoding_rs = "0.8"
+imap = { version = "2", default-features = false, features = ["tls"] }
+mailparse = "0.15"
+native-tls = { version = "0.2", features = ["vendored"] }
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+unicode-width = "0.2"
 
+[profile.release]
+lto = true
+codegen-units = 1
