@@ -35,13 +35,19 @@ pub fn split_headers_body(raw: &str) -> (Vec<&str>, Vec<&str>) {
     (header_lines, body_lines)
 }
 
+/// Replace tab characters with "<------>" like mcedit does
+fn replace_tabs(text: &str) -> String {
+    text.replace('\t', "<------>")
+}
+
 pub fn highlight_raw_source(raw: &str, theme: &Theme) -> Vec<Line<'static>> {
     let (header_lines, body_lines) = split_headers_body(raw);
     let mut out = Vec::new();
 
     for line in &header_lines {
-        let style = theme.header_line_style(line);
-        out.push(Line::from(Span::styled(line.to_string(), style)));
+        let display_line = replace_tabs(line);
+        let style = theme.header_line_style(&display_line);
+        out.push(Line::from(Span::styled(display_line, style)));
     }
 
     if !header_lines.is_empty() && !body_lines.is_empty() {
@@ -49,12 +55,13 @@ pub fn highlight_raw_source(raw: &str, theme: &Theme) -> Vec<Line<'static>> {
     }
 
     for line in body_lines {
-        let style = if line.starts_with("--") && line.ends_with("--") {
+        let display_line = replace_tabs(line);
+        let style = if display_line.starts_with("--") && display_line.ends_with("--") {
             theme.mime_boundary_style()
         } else {
             theme.body_style()
         };
-        out.push(Line::from(Span::styled(line.to_string(), style)));
+        out.push(Line::from(Span::styled(display_line, style)));
     }
 
     out
