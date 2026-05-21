@@ -60,4 +60,4 @@ Connection profiles are JSON files under `~/.config/wmailor/connections/`.
 
 ## Disclaimer
 
-This is an **admin/debug** tool. It assumes you trust the server and your terminal. Do not use it as a daily MUA for untrusted mail without understanding the risks of displaying raw source.
+This is an **admin/debug** tool.  Do not use it as a daily MUA.
