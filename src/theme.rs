@@ -184,6 +184,11 @@ impl Theme {
 
     pub fn header_line_style(&self, line: &str) -> Style {
         let key = line.split(':').next().unwrap_or("").trim();
+        self.header_line_style_for_key(key)
+    }
+
+    /// Get the style for a header based on its key name
+    pub fn header_line_style_for_key(&self, key: &str) -> Style {
         let fg = match key.to_ascii_lowercase().as_str() {
             "received" => self.header_received.to_color(),
             k if k.starts_with('x') => self.header_x.to_color(),
