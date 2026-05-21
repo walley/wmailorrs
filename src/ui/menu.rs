@@ -1,0 +1,117 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuBarItem {
+    Server,
+    Message,
+    View,
+    Colors,
+}
+
+#[derive(Debug, Clone)]
+pub struct MenuItem {
+    pub label: String,
+    pub shortcut: Option<String>,
+    pub action: MenuAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    Connect,
+    Disconnect,
+    SaveConnection,
+    LoadConnection,
+    SaveMessage,
+    SaveRawPart,
+    DownloadPart,
+    ToggleMimeFold,
+    ToggleOriginalDecoded,
+    ShowHex,
+    RefreshFolders,
+    RefreshMessages,
+    ShowSourceView,
+    ShowMimeTreeView,
+    EditColors,
+    ResetColors,
+    Quit,
+}
+
+pub struct MenuState {
+    pub open_bar: Option<MenuBarItem>,
+    pub cursor: usize,
+}
+
+impl Default for MenuState {
+    fn default() -> Self {
+        Self {
+            open_bar: None,
+            cursor: 0,
+        }
+    }
+}
+
+impl MenuState {
+    pub fn items_for(bar: MenuBarItem) -> Vec<MenuItem> {
+        match bar {
+            MenuBarItem::Server => vec![
+                item("Connect…", "F3", MenuAction::Connect),
+                item("Disconnect", "F4", MenuAction::Disconnect),
+                item("Save connection", "F5", MenuAction::SaveConnection),
+                item("Load connection", "F6", MenuAction::LoadConnection),
+                item("Refresh folders", "F7", MenuAction::RefreshFolders),
+            ],
+            MenuBarItem::Message => vec![
+                item("Save message (RFC822)", "s", MenuAction::SaveMessage),
+                item("Save focused part", "S", MenuAction::SaveRawPart),
+                item("Download part", "d", MenuAction::DownloadPart),
+                item("Toggle MIME fold", "Space", MenuAction::ToggleMimeFold),
+                item("Original / decoded", "o", MenuAction::ToggleOriginalDecoded),
+                item("Hex view (binary)", "x", MenuAction::ShowHex),
+                item("Refresh list", "F7", MenuAction::RefreshMessages),
+            ],
+            MenuBarItem::View => vec![
+                item("Source view", "1", MenuAction::ShowSourceView),
+                item("MIME tree view", "2", MenuAction::ShowMimeTreeView),
+                item("Hex view", "x", MenuAction::ShowHex),
+            ],
+            MenuBarItem::Colors => vec![
+                item("Edit theme (saved on exit)", "c", MenuAction::EditColors),
+                item("Reset to defaults", "r", MenuAction::ResetColors),
+            ],
+        }
+    }
+
+    pub fn open(&mut self, bar: MenuBarItem) {
+        self.open_bar = Some(bar);
+        self.cursor = 0;
+    }
+
+    pub fn close(&mut self) {
+        self.open_bar = None;
+    }
+
+    pub fn move_up(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+    }
+
+    pub fn move_down(&mut self, len: usize) {
+        if self.cursor + 1 < len {
+            self.cursor += 1;
+        }
+    }
+}
+
+fn item(label: &str, shortcut: &str, action: MenuAction) -> MenuItem {
+    MenuItem {
+        label: label.to_string(),
+        shortcut: Some(shortcut.to_string()),
+        action,
+    }
+}
+
+pub const MENU_BAR: &[(&str, MenuBarItem)] = &[
+    ("Server", MenuBarItem::Server),
+    ("Message", MenuBarItem::Message),
+    ("View", MenuBarItem::View),
+    ("Colors", MenuBarItem::Colors),
+];

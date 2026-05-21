@@ -1,0 +1,371 @@
+use crate::app::{App, ContentMode, Dialog, FocusPanel};
+use crate::mail::{hex_lines, highlight_raw_source};
+use crate::ui::keybar::{format_keybar, keybar_hints};
+use crate::ui::menu::{MenuBarItem, MenuState, MENU_BAR};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Scrollbar,
+    ScrollbarOrientation, Wrap,
+};
+use ratatui::Frame;
+
+pub fn draw(f: &mut Frame, app: &mut App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
+        .split(f.area());
+
+    draw_menu_bar(f, chunks[0], app);
+    draw_panels(f, chunks[1], app);
+    draw_keybar(f, chunks[2], app);
+
+    if app.menu.open_bar.is_some() {
+        draw_dropdown_menu(f, app);
+    }
+    draw_dialog(f, app);
+}
+
+fn draw_menu_bar(f: &mut Frame, area: Rect, app: &App) {
+    let mut spans = Vec::new();
+    for (i, (label, item)) in MENU_BAR.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let style = if app.menu.open_bar == Some(*item) {
+            app.theme.menu_style().add_modifier(Modifier::REVERSED)
+        } else {
+            app.theme.menu_style()
+        };
+        spans.push(Span::styled(format!(" {label} "), style));
+    }
+    spans.push(Span::raw("  "));
+    let conn = app
+        .connection_name
+        .as_deref()
+        .unwrap_or("offline");
+    spans.push(Span::styled(
+        format!("│ {conn} │ {} ", app.status),
+        Style::default().fg(app.theme.status_ok.to_color()),
+    ));
+    let p = Paragraph::new(Line::from(spans));
+    f.render_widget(p, area);
+}
+
+fn panel_block<'a>(title: &'a str, focused: bool, app: &App) -> Block<'a> {
+    if focused {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(app.theme.panel_focus_border_style())
+            .title(Span::styled(
+                format!(" ► {title} "),
+                app.theme.panel_focus_title_style(),
+            ))
+    } else {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(app.theme.panel_border_style())
+            .title(Span::styled(
+                format!(" {title} "),
+                app.theme.panel_title_style(),
+            ))
+    }
+}
+
+fn draw_panels(f: &mut Frame, area: Rect, app: &mut App) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
+        .split(area);
+
+    draw_folders(f, cols[0], app);
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+        .split(cols[1]);
+    draw_messages(f, right[0], app);
+    draw_content(f, right[1], app);
+}
+
+fn draw_folders(f: &mut Frame, area: Rect, app: &mut App) {
+    let focused = app.focus == FocusPanel::Folders;
+    app.clamp_folder_cursor();
+    let items: Vec<ListItem> = app
+        .folders
+        .iter()
+        .map(|fd| ListItem::new(fd.name.as_str()))
+        .collect();
+    let list = List::new(items)
+        .block(panel_block("Folders", focused, app))
+        .highlight_style(app.theme.selection_style())
+        .highlight_symbol("▸ ");
+    f.render_stateful_widget(list, area, &mut app.folder_list_state);
+}
+
+fn draw_messages(f: &mut Frame, area: Rect, app: &mut App) {
+    let focused = app.focus == FocusPanel::Messages;
+    app.clamp_message_cursor();
+    let filtered = app.filtered_messages();
+    let title = if app.message_filter.is_empty() {
+        "Messages".to_string()
+    } else {
+        format!("Messages /{}", app.message_filter)
+    };
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .map(|m| {
+            ListItem::new(format!("{:5} {:6} {}", m.uid, m.size, m.summary))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(panel_block(&title, focused, app))
+        .highlight_style(app.theme.selection_style())
+        .highlight_symbol("▸ ");
+    f.render_stateful_widget(list, area, &mut app.message_list_state);
+}
+
+fn draw_content(f: &mut Frame, area: Rect, app: &App) {
+    let focused = app.focus == FocusPanel::Content;
+    let title = match app.content_mode {
+        ContentMode::Source => "Source (RFC822)",
+        ContentMode::MimeTree => {
+            if app.mime_show_decoded {
+                "MIME tree (decoded)"
+            } else {
+                "MIME tree (original)"
+            }
+        }
+        ContentMode::Hex => "Hex view",
+    };
+    let block = panel_block(title, focused, app);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let line_count = lines_len_hint(app);
+    let lines: Vec<Line> = match app.content_mode {
+        ContentMode::Source => app
+            .current_raw
+            .as_ref()
+            .map(|r| highlight_raw_source(r, &app.theme))
+            .unwrap_or_else(|| vec![Line::from("(no message)")]),
+        ContentMode::MimeTree => {
+            let mut out = Vec::new();
+            let scroll = app.content_scroll as usize;
+            for (i, (text, kind, node_id)) in app.mime_lines_for_display().into_iter().enumerate() {
+                let mut style = match kind {
+                    crate::mail::VisibleLineKind::Summary => app.theme.mime_boundary_style(),
+                    crate::mail::VisibleLineKind::HeaderBlock => app.theme.header_line_style(&text),
+                    crate::mail::VisibleLineKind::BinaryHint => app.theme.mime_folded_style(),
+                    _ => app.theme.body_style(),
+                };
+                if i == scroll {
+                    style = style.bg(app.theme.selection.to_color());
+                } else if app.mime_focused_node == node_id && node_id.is_some() {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                }
+                out.push(Line::from(Span::styled(text, style)));
+            }
+            if out.is_empty() {
+                out.push(Line::from("(fetch a message first)"));
+            }
+            out
+        }
+        ContentMode::Hex => {
+            let data = app.hex_data.as_deref().unwrap_or(&[]);
+            hex_lines(
+                data,
+                app.theme.hex_address_style(),
+                app.theme.hex_bytes_style(),
+                app.theme.hex_ascii_style(),
+            )
+        }
+    };
+
+    let scroll = app.content_scroll as usize;
+    let visible: Vec<Line> = lines.into_iter().skip(scroll).collect();
+    let p = Paragraph::new(visible).wrap(Wrap { trim: false });
+    f.render_widget(p, inner);
+
+    if line_count > inner.height as usize {
+        let mut sb_state = ratatui::widgets::ScrollbarState::default()
+            .content_length(line_count)
+            .position(scroll);
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        f.render_stateful_widget(
+            sb,
+            inner,
+            &mut sb_state,
+        );
+    }
+}
+
+fn lines_len_hint(app: &App) -> usize {
+    match app.content_mode {
+        ContentMode::Source => app.current_raw.as_ref().map(|r| r.lines().count()).unwrap_or(0),
+        ContentMode::MimeTree => app.mime_lines_for_display().len(),
+        ContentMode::Hex => app
+            .hex_data
+            .as_ref()
+            .map(|d| (d.len() + 15) / 16)
+            .unwrap_or(0),
+    }
+}
+
+fn draw_keybar(f: &mut Frame, area: Rect, app: &App) {
+    let hints = keybar_hints(app.focus, app.connected, app.content_mode);
+    let text = format_keybar(&hints, area.width as usize);
+    let p = Paragraph::new(text).style(app.theme.keybar_style());
+    f.render_widget(p, area);
+}
+
+fn draw_dropdown_menu(f: &mut Frame, app: &App) {
+    let bar = app.menu.open_bar.unwrap();
+    let items = MenuState::items_for(bar);
+    let w = 36u16;
+    let h = (items.len() as u16 + 2).min(12);
+    let x = match bar {
+        MenuBarItem::Server => 1,
+        MenuBarItem::Message => 10,
+        MenuBarItem::View => 22,
+        MenuBarItem::Colors => 30,
+    };
+    let area = Rect {
+        x,
+        y: 1,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, area);
+    let lines: Vec<Line> = items
+        .iter()
+        .enumerate()
+        .map(|(i, it)| {
+            let style = if i == app.menu.cursor {
+                app.theme.selection_style()
+            } else {
+                app.theme.menu_style()
+            };
+            let short = it.shortcut.as_deref().unwrap_or("");
+            Line::from(vec![
+                Span::styled(format!(" {:<24}", it.label), style),
+                Span::styled(format!("{short:>6} ", short = short), style),
+            ])
+        })
+        .collect();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(app.theme.panel_border_style())
+        .style(app.theme.menu_style());
+    let p = Paragraph::new(lines).block(block);
+    f.render_widget(p, area);
+}
+
+fn draw_dialog(f: &mut Frame, app: &App) {
+    match app.dialog {
+        Dialog::None => {}
+        Dialog::Connect => draw_connect_dialog(f, app),
+        Dialog::LoadConnection => draw_load_dialog(f, app),
+        Dialog::Help => draw_help_dialog(f),
+        Dialog::Status => {}
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+fn draw_connect_dialog(f: &mut Frame, app: &App) {
+    let area = centered_rect(60, 50, f.area());
+    f.render_widget(Clear, area);
+    let form = &app.connect_form;
+    let password_display = if form.password.is_empty() {
+        String::new()
+    } else {
+        "********".to_string()
+    };
+    let tls_display = if form.tls { "yes" } else { "no" }.to_string();
+    let fields: [(&str, &str); 6] = [
+        ("Name", &form.name),
+        ("Host", &form.host),
+        ("Port", &form.port),
+        ("User", &form.user),
+        ("Password", &password_display),
+        ("TLS", &tls_display),
+    ];
+    let mut lines = vec![Line::from(" Connection profile ")];
+    for (i, (label, val)) in fields.iter().enumerate() {
+        let mark = if i == form.field { "▶" } else { " " };
+        lines.push(Line::from(format!("{mark} {label}: {val}")));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(" Enter=connect  F5/Ctrl+S=save  Esc=cancel "));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .title(" Connect ");
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_load_dialog(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 40, f.area());
+    f.render_widget(Clear, area);
+    let items: Vec<Line> = app
+        .saved_connections
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let mark = if i == app.connect_form.field { "▶" } else { " " };
+            Line::from(format!("{mark} {}. {}", i + 1, n))
+        })
+        .collect();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .title(" Load connection ");
+    f.render_widget(Paragraph::new(items).block(block), area);
+}
+
+fn draw_help_dialog(f: &mut Frame) {
+    let area = centered_rect(70, 60, f.area());
+    f.render_widget(Clear, area);
+    let text = "\
+wmailor — admin IMAP client (raw source only)\n\
+\n\
+Tab       cycle panels\n\
+Enter     open folder / fetch message\n\
+F2        menu   F3 connect   F10 quit\n\
+Space     toggle MIME fold (MIME view)\n\
+o         original/decoded   x hex   d download\n\
+1/2       source / MIME tree views\n\
+";
+    f.render_widget(
+        Paragraph::new(text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Double)
+                .title(" Help "),
+        ),
+        area,
+    );
+}
