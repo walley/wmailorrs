@@ -150,6 +150,12 @@ fn handle_menu_key(app: &mut App, key: KeyEvent) {
         KeyCode::Esc | KeyCode::F(2) => app.menu.close(),
         KeyCode::Up => app.menu.move_up(),
         KeyCode::Down => app.menu.move_down(items.len()),
+        KeyCode::Left => {
+            app.menu.move_bar_left();
+        }
+        KeyCode::Right => {
+            app.menu.move_bar_right();
+        }
         KeyCode::Enter => {
             if let Some(item) = items.get(app.menu.cursor) {
                 let action = item.action;

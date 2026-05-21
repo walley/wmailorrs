@@ -99,6 +99,46 @@ impl MenuState {
             self.cursor += 1;
         }
     }
+
+    pub fn move_bar_left(&mut self) {
+        if let Some(bar) = self.open_bar {
+            let current_index = match bar {
+                MenuBarItem::Server => 0,
+                MenuBarItem::Message => 1,
+                MenuBarItem::View => 2,
+                MenuBarItem::Colors => 3,
+            };
+            if current_index > 0 {
+                let new_bar = match current_index - 1 {
+                    0 => MenuBarItem::Server,
+                    1 => MenuBarItem::Message,
+                    2 => MenuBarItem::View,
+                    _ => MenuBarItem::Colors,
+                };
+                self.open(new_bar);
+            }
+        }
+    }
+
+    pub fn move_bar_right(&mut self) {
+        if let Some(bar) = self.open_bar {
+            let current_index = match bar {
+                MenuBarItem::Server => 0,
+                MenuBarItem::Message => 1,
+                MenuBarItem::View => 2,
+                MenuBarItem::Colors => 3,
+            };
+            if current_index < 3 {
+                let new_bar = match current_index + 1 {
+                    0 => MenuBarItem::Server,
+                    1 => MenuBarItem::Message,
+                    2 => MenuBarItem::View,
+                    _ => MenuBarItem::Colors,
+                };
+                self.open(new_bar);
+            }
+        }
+    }
 }
 
 fn item(label: &str, shortcut: &str, action: MenuAction) -> MenuItem {
