@@ -135,8 +135,12 @@ fn draw_content(f: &mut Frame, area: Rect, app: &App) {
     let title = match app.content_mode {
         ContentMode::Source => "Source (RFC822)",
         ContentMode::MimeTree => {
-            if app.mime_show_decoded {
-                "MIME tree (decoded)"
+            if let Some(id) = app.mime_focused_node {
+                if app.mime_show_decoded.contains(&id) {
+                    "MIME tree (decoded)"
+                } else {
+                    "MIME tree (original)"
+                }
             } else {
                 "MIME tree (original)"
             }
