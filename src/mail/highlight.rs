@@ -40,13 +40,43 @@ fn replace_tabs(text: &str) -> String {
     text.replace('\t', "<------>")
 }
 
+/// Extract header key from a header line
+/// Returns the key (e.g., "From", "To", "Date") if this is a new header line,
+/// or None if this is a continuation line (starts with whitespace)
+fn get_header_key(line: &str) -> Option<String> {
+    if line.is_empty() {
+        return None;
+    }
+    
+    // Continuation lines start with whitespace (space or tab)
+    if line.starts_with(' ') || line.starts_with('\t') {
+        return None;
+    }
+    
+    // Extract the header key (part before the colon)
+    line.split(':').next().map(|s| s.trim().to_string())
+}
+
 pub fn highlight_raw_source(raw: &str, theme: &Theme) -> Vec<Line<'static>> {
     let (header_lines, body_lines) = split_headers_body(raw);
     let mut out = Vec::new();
+    let mut current_header_key: Option<String> = None;
 
     for line in &header_lines {
         let display_line = replace_tabs(line);
-        let style = theme.header_line_style(&display_line);
+        
+        // Check if this is a new header or a continuation
+        if let Some(key) = get_header_key(line) {
+            current_header_key = Some(key.clone());
+        }
+        
+        // Use the current header key to determine styling
+        let style = if let Some(ref key) = current_header_key {
+            theme.header_line_style_for_key(key)
+        } else {
+            theme.header_line_style(&display_line)
+        };
+        
         out.push(Line::from(Span::styled(display_line, style)));
     }
 
