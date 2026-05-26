@@ -42,7 +42,7 @@ impl MimeTree {
     pub fn flatten_visible(
         &self,
         folded: &std::collections::HashSet<usize>,
-        show_decoded: bool,
+        show_decoded: &std::collections::HashSet<usize>,
     ) -> Vec<VisibleMimeLine> {
         let mut out = Vec::new();
         for node in &self.nodes {
@@ -181,7 +181,7 @@ fn emit_node(
     node: &MimeNode,
     out: &mut Vec<VisibleMimeLine>,
     folded: &std::collections::HashSet<usize>,
-    show_decoded: bool,
+    show_decoded: &std::collections::HashSet<usize>,
     indent: usize,
 ) {
     let is_folded = folded.contains(&node.id);
@@ -223,7 +223,7 @@ fn emit_node(
             foldable: false,
             folded: false,
         });
-    } else if show_decoded {
+    } else if show_decoded.contains(&node.id) {
         let text = String::from_utf8_lossy(&node.decoded_body).to_string();
         for line in text.lines() {
             out.push(VisibleMimeLine {
