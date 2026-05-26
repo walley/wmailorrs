@@ -1,5 +1,5 @@
 use crate::config::{self, ConnectionProfile};
-use crate::imap::{FolderCommand, ImapCommand, ImapEvent, ImapWorker, MessageEntry};
+use crate::imap::{FolderEntry, ImapCommand, ImapEvent, ImapWorker, MessageEntry};
 use crate::mail::{save_part, MimeTree, VisibleLineKind};
 use crate::theme::Theme;
 use crate::ui::menu::{MenuAction, MenuState};
