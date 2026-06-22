@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use mail_parser::{Message, MessagePart, PartType};
+use mail_parser::Message;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -21,20 +21,26 @@ pub struct MimeNode {
 pub struct MimeTree {
     pub nodes: Vec<MimeNode>,
     pub root_lines: Vec<String>,
+    pub raw_message: Vec<u8>,
 }
 
 impl MimeTree {
     pub fn from_raw(raw: &str) -> Result<Self> {
-        let msg = Message::parse(raw.as_bytes())
+        let raw_bytes = raw.as_bytes();
+        let msg = Message::parse(raw_bytes)
             .context("Failed to parse email")?;
         
         let root_lines: Vec<String> = raw.lines().map(String::from).collect();
         let mut nodes = Vec::new();
         let mut next_id = 0;
         
-        build_nodes_from_parser(&msg, raw, &mut nodes, &mut next_id);
+        build_nodes_from_parser(&msg, raw_bytes, &mut nodes, &mut next_id);
         
-        Ok(Self { nodes, root_lines })
+        Ok(Self { 
+            nodes, 
+            root_lines,
+            raw_message: raw_bytes.to_vec(),
+        })
     }
 
     pub fn node(&self, id: usize) -> Option<&MimeNode> {
@@ -76,33 +82,51 @@ pub enum VisibleLineKind {
 
 fn build_nodes_from_parser(
     msg: &Message,
-    raw: &str,
+    raw: &[u8],
     nodes: &mut Vec<MimeNode>,
     next_id: &mut usize,
 ) {
     let id = *next_id;
     *next_id += 1;
 
-    let content_type = msg.content_type().unwrap_or("application/octet-stream").to_string();
+    // Get content type
+    let content_type = if let Some(ct) = msg.content_type() {
+        format!(
+            "{}/{}",
+            ct.maintype,
+            ct.subtype
+        )
+    } else {
+        "application/octet-stream".to_string()
+    };
+
+    // Get filename from Content-Disposition header
     let filename = msg.attachment_name().map(|s| s.to_string());
-    let encoding = msg.transfer_encoding().map(|e| format!("{:?}", e));
+    
+    // Get transfer encoding
+    let encoding = msg.encoding().map(|e| format!("{:?}", e));
     
     // Get raw and decoded bodies
     let (raw_body, decoded_body) = extract_bodies(msg, raw);
     
-    let is_binary = !msg.is_text();
+    // Check if binary (no text subtype)
+    let is_binary = if let Some(ct) = msg.content_type() {
+        ct.maintype != "text"
+    } else {
+        false
+    };
     
-    // Build raw header string
-    let raw_header = format!("{:?}", msg.headers());
+    // Build raw header string from all headers
+    let raw_header = format_headers(msg);
 
     let boundary = None; // mail-parser handles boundaries internally
 
     let mut children = Vec::new();
     
     // Handle multipart messages
-    if let Some(parts) = msg.parts() {
-        for part in parts {
-            build_nodes_from_parser(&part, raw, &mut children, next_id);
+    for part in msg.body_parts() {
+        if let Some(part_msg) = part.as_message() {
+            build_nodes_from_parser(&part_msg, raw, &mut children, next_id);
         }
     }
 
@@ -120,35 +144,42 @@ fn build_nodes_from_parser(
     });
 }
 
-fn extract_bodies(msg: &Message, raw: &str) -> (Vec<u8>, Vec<u8>) {
-    // Get the raw body from the original message
-    let raw_body = if let Some(part_data) = get_raw_part_data(msg, raw) {
-        part_data
+fn format_headers(msg: &Message) -> String {
+    let mut headers = String::new();
+    for header in msg.headers() {
+        headers.push_str(&format!("{}: {}\n", header.name(), header.value()));
+    }
+    headers
+}
+
+fn extract_bodies(msg: &Message, raw: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    // Get decoded body first
+    let decoded_body = if let Some(body_part) = msg.body_part(0) {
+        if let Some(text) = body_part.text_contents() {
+            text.as_bytes().to_vec()
+        } else {
+            Vec::new()
+        }
     } else {
-        // Fallback: use the raw message bytes
-        msg.raw_message().to_vec()
+        Vec::new()
     };
     
-    // Get decoded body
-    let decoded_body = if let Some(body) = msg.body_text(1024 * 1024) {
-        body.as_bytes().to_vec()
-    } else if let Some(contents) = msg.contents() {
-        contents.into()
+    // Get raw body by extracting from raw message
+    let raw_body = if let Some(pos) = find_body_start(raw) {
+        raw[pos..].to_vec()
     } else {
-        raw_body.clone()
+        raw.to_vec()
     };
     
     (raw_body, decoded_body)
 }
 
-fn get_raw_part_data(msg: &Message, raw: &str) -> Option<Vec<u8>> {
-    // Extract the raw data for this specific part from the source
-    // by finding its position in the raw message
-    let raw_bytes = raw.as_bytes();
-    let raw_msg = msg.raw_message();
-    
-    if let Some(pos) = find_subsequence(raw_bytes, raw_msg) {
-        Some(raw_bytes[pos..pos + raw_msg.len()].to_vec())
+fn find_body_start(raw: &[u8]) -> Option<usize> {
+    // Find the double CRLF or double LF that separates headers from body
+    if let Some(pos) = find_subsequence(raw, b"\r\n\r\n") {
+        Some(pos + 4)
+    } else if let Some(pos) = find_subsequence(raw, b"\n\n") {
+        Some(pos + 2)
     } else {
         None
     }
