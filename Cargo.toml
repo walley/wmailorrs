@@ -13,6 +13,7 @@ crossterm = "0.28"
 directories = "5"
 encoding_rs = "0.8"
 imap = { version = "2", default-features = false, features = ["tls"] }
+mail-parser = "0.9"
 mailparse = "0.15"
 native-tls = { version = "0.2", features = ["vendored"] }
 ratatui = "0.29"
