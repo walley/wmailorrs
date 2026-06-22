@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use mail_parser::{Message, MessageParser, MimeHeaders, HeaderValue, Address, Addr};
+use mail_parser::{Message, MessageParser, MimeHeaders, HeaderValue, Address, Addr, MessagePart};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -30,15 +30,15 @@ impl MimeTree {
         let msg = MessageParser::default()
             .parse(raw_bytes)
             .context("Failed to parse email")?;
-        
+
         let root_lines: Vec<String> = raw.lines().map(String::from).collect();
         let mut nodes = Vec::new();
         let mut next_id = 0;
-        
+
         build_nodes_from_parser(&msg, raw_bytes, &mut nodes, &mut next_id);
-        
-        Ok(Self { 
-            nodes, 
+
+        Ok(Self {
+            nodes,
             root_lines,
             raw_message: raw_bytes.to_vec(),
         })
@@ -90,6 +90,7 @@ fn build_nodes_from_parser(
     let id = *next_id;
     *next_id += 1;
 
+    // ... existing code for content_type, filename, encoding, etc. ...
     // Get content type - fields are c_type and c_subtype (not maintype/subtype)
     let content_type = if let Some(ct) = msg.content_type() {
         let subtype = ct.c_subtype.as_deref().unwrap_or("plain");
@@ -100,24 +101,24 @@ fn build_nodes_from_parser(
 
     // Get filename from Content-Disposition header
     let filename = msg.attachment_name().map(|s| s.to_string());
-    
+
     // Get transfer encoding - use header lookup instead
     let encoding = msg.headers()
         .iter()
         .find(|h| h.name.to_string().eq_ignore_ascii_case("content-transfer-encoding"))
         .and_then(|h| h.value.as_text())
         .map(|s| s.to_string());
-    
+
     // Get raw and decoded bodies
     let (raw_body, decoded_body) = extract_bodies(msg, raw);
-    
+
     // Check if binary (no text subtype)
     let is_binary = if let Some(ct) = msg.content_type() {
         ct.c_type.as_ref() != "text"
     } else {
         false
     };
-    
+
     // Build raw header string from all headers
     let raw_header = format_headers(msg);
 
@@ -125,9 +126,74 @@ fn build_nodes_from_parser(
 
     let mut children = Vec::new();
     
+    // Use the message() method on MessagePart to get nested messages
+    for part in &msg.parts {
+        if let Some(sub_msg) = part.message() {
+            build_nodes_from_parser(sub_msg, raw, &mut children, next_id);
+        }
+    }
+
+    nodes.push(MimeNode {
+        id,
+        content_type,
+        filename,
+        encoding,
+        raw_header,
+        raw_body,
+        decoded_body,
+        is_binary,
+        children,
+        boundary,
+    });
+}
+
+/*fn build_nodes_from_parser(
+    msg: &Message,
+    raw: &[u8],
+    nodes: &mut Vec<MimeNode>,
+    next_id: &mut usize,
+) {
+    let id = *next_id;
+    *next_id += 1;
+
+    // Get content type - fields are c_type and c_subtype (not maintype/subtype)
+    let content_type = if let Some(ct) = msg.content_type() {
+        let subtype = ct.c_subtype.as_deref().unwrap_or("plain");
+        format!("{}/{}", ct.c_type, subtype)
+    } else {
+        "application/octet-stream".to_string()
+    };
+
+    // Get filename from Content-Disposition header
+    let filename = msg.attachment_name().map(|s| s.to_string());
+
+    // Get transfer encoding - use header lookup instead
+    let encoding = msg.headers()
+        .iter()
+        .find(|h| h.name.to_string().eq_ignore_ascii_case("content-transfer-encoding"))
+        .and_then(|h| h.value.as_text())
+        .map(|s| s.to_string());
+
+    // Get raw and decoded bodies
+    let (raw_body, decoded_body) = extract_bodies(msg, raw);
+
+    // Check if binary (no text subtype)
+    let is_binary = if let Some(ct) = msg.content_type() {
+        ct.c_type.as_ref() != "text"
+    } else {
+        false
+    };
+
+    // Build raw header string from all headers
+    let raw_header = format_headers(msg);
+
+    let boundary = None; // mail-parser handles boundaries internally
+
+    let mut children = Vec::new();
+
     // Handle multipart messages - msg.parts() returns slice, not Option
-    for part in msg.parts() {
-        if let Some(part_msg) = part.as_message() {
+    for partx in msg.parts() {
+        if let Some(part_msg) = partx.as_message() {
             build_nodes_from_parser(&part_msg, raw, &mut children, next_id);
         }
     }
@@ -145,6 +211,7 @@ fn build_nodes_from_parser(
         boundary,
     });
 }
+*/
 
 fn format_headers(msg: &Message) -> String {
     let mut headers = String::new();
@@ -213,14 +280,14 @@ fn extract_bodies(msg: &Message, raw: &[u8]) -> (Vec<u8>, Vec<u8>) {
     } else {
         Vec::new()
     };
-    
+
     // Get raw body by extracting from raw message
     let raw_body = if let Some(pos) = find_body_start(raw) {
         raw[pos..].to_vec()
     } else {
         raw.to_vec()
     };
-    
+
     (raw_body, decoded_body)
 }
 
@@ -253,7 +320,7 @@ fn emit_node(
         .clone()
         .unwrap_or_else(|| node.content_type.clone());
     let enc = node.encoding.as_deref().unwrap_or("none");
-    
+
     out.push(VisibleMimeLine {
         node_id: Some(node.id),
         indent,
