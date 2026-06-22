@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use mail_parser::Message;
+use mail_parser::{Message, MessageParser, MimeHeaders, HeaderValue};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -27,7 +27,8 @@ pub struct MimeTree {
 impl MimeTree {
     pub fn from_raw(raw: &str) -> Result<Self> {
         let raw_bytes = raw.as_bytes();
-        let msg = Message::parse(raw_bytes)
+        let msg = MessageParser::default()
+            .parse(raw_bytes)
             .context("Failed to parse email")?;
         
         let root_lines: Vec<String> = raw.lines().map(String::from).collect();
@@ -104,7 +105,10 @@ fn build_nodes_from_parser(
     let filename = msg.attachment_name().map(|s| s.to_string());
     
     // Get transfer encoding
-    let encoding = msg.encoding().map(|e| format!("{:?}", e));
+    let encoding = msg.body_structures()
+        .and_then(|structures| structures.first())
+        .and_then(|s| s.encoding.as_ref())
+        .map(|e| format!("{:?}", e));
     
     // Get raw and decoded bodies
     let (raw_body, decoded_body) = extract_bodies(msg, raw);
@@ -124,9 +128,11 @@ fn build_nodes_from_parser(
     let mut children = Vec::new();
     
     // Handle multipart messages
-    for part in msg.body_parts() {
-        if let Some(part_msg) = part.as_message() {
-            build_nodes_from_parser(&part_msg, raw, &mut children, next_id);
+    if let Some(parts) = msg.body_parts() {
+        for part in parts {
+            if let Some(part_msg) = part.as_message() {
+                build_nodes_from_parser(&part_msg, raw, &mut children, next_id);
+            }
         }
     }
 
@@ -147,19 +153,41 @@ fn build_nodes_from_parser(
 fn format_headers(msg: &Message) -> String {
     let mut headers = String::new();
     for header in msg.headers() {
-        headers.push_str(&format!("{}: {}\n", header.name(), header.value()));
+        let value_str = header_value_to_string(&header.value);
+        headers.push_str(&format!("{}: {}\n", header.name(), value_str));
     }
     headers
 }
 
+fn header_value_to_string(value: &HeaderValue) -> String {
+    match value {
+        HeaderValue::Text(s) => s.to_string(),
+        HeaderValue::TextList(list) => list.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", "),
+        HeaderValue::Date(date) => format!("{:?}", date),
+        HeaderValue::Address(addrs) => {
+            addrs.iter()
+                .map(|addr| {
+                    if let Some(name) = &addr.name {
+                        format!("{} <{}>", name, addr.address)
+                    } else {
+                        addr.address.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        HeaderValue::ContentType(ct) => format!("{}/{}", ct.maintype, ct.subtype),
+        HeaderValue::ContentDisposition(cd) => format!("{:?}", cd),
+        other => format!("{:?}", other),
+    }
+}
+
 fn extract_bodies(msg: &Message, raw: &[u8]) -> (Vec<u8>, Vec<u8>) {
     // Get decoded body first
-    let decoded_body = if let Some(body_part) = msg.body_part(0) {
-        if let Some(text) = body_part.text_contents() {
-            text.as_bytes().to_vec()
-        } else {
-            Vec::new()
-        }
+    let decoded_body = if let Some(text) = msg.body_text(0) {
+        text.as_bytes().to_vec()
+    } else if let Some(html) = msg.body_html(0) {
+        html.as_bytes().to_vec()
     } else {
         Vec::new()
     };
