@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use mail_parser::{Message, MessageParser, MimeHeaders, HeaderValue};
+use mail_parser::{Message, MessageParser, MimeHeaders, HeaderValue, Address, Addr};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -90,13 +90,10 @@ fn build_nodes_from_parser(
     let id = *next_id;
     *next_id += 1;
 
-    // Get content type
+    // Get content type - fields are c_type and c_subtype (not maintype/subtype)
     let content_type = if let Some(ct) = msg.content_type() {
-        format!(
-            "{}/{}",
-            ct.maintype,
-            ct.subtype
-        )
+        let subtype = ct.c_subtype.as_deref().unwrap_or("plain");
+        format!("{}/{}", ct.c_type, subtype)
     } else {
         "application/octet-stream".to_string()
     };
@@ -104,18 +101,19 @@ fn build_nodes_from_parser(
     // Get filename from Content-Disposition header
     let filename = msg.attachment_name().map(|s| s.to_string());
     
-    // Get transfer encoding
-    let encoding = msg.body_structures()
-        .and_then(|structures| structures.first())
-        .and_then(|s| s.encoding.as_ref())
-        .map(|e| format!("{:?}", e));
+    // Get transfer encoding - use header lookup instead
+    let encoding = msg.headers()
+        .iter()
+        .find(|h| h.name.to_string().eq_ignore_ascii_case("content-transfer-encoding"))
+        .and_then(|h| h.value.as_text())
+        .map(|s| s.to_string());
     
     // Get raw and decoded bodies
     let (raw_body, decoded_body) = extract_bodies(msg, raw);
     
     // Check if binary (no text subtype)
     let is_binary = if let Some(ct) = msg.content_type() {
-        ct.maintype != "text"
+        ct.c_type.as_ref() != "text"
     } else {
         false
     };
@@ -127,12 +125,10 @@ fn build_nodes_from_parser(
 
     let mut children = Vec::new();
     
-    // Handle multipart messages
-    if let Some(parts) = msg.body_parts() {
-        for part in parts {
-            if let Some(part_msg) = part.as_message() {
-                build_nodes_from_parser(&part_msg, raw, &mut children, next_id);
-            }
+    // Handle multipart messages - msg.parts() returns slice, not Option
+    for part in msg.parts() {
+        if let Some(part_msg) = part.as_message() {
+            build_nodes_from_parser(&part_msg, raw, &mut children, next_id);
         }
     }
 
@@ -163,22 +159,48 @@ fn header_value_to_string(value: &HeaderValue) -> String {
     match value {
         HeaderValue::Text(s) => s.to_string(),
         HeaderValue::TextList(list) => list.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", "),
-        HeaderValue::Date(date) => format!("{:?}", date),
-        HeaderValue::Address(addrs) => {
+        HeaderValue::DateTime(date) => format!("{:?}", date),
+        HeaderValue::Address(addr) => format_address(addr),
+        HeaderValue::ContentType(ct) => {
+            let subtype = ct.c_subtype.as_deref().unwrap_or("plain");
+            format!("{}/{}", ct.c_type, subtype)
+        }
+        HeaderValue::Received(received) => format!("{:?}", received),
+        HeaderValue::Empty => String::new(),
+    }
+}
+
+fn format_address(addr: &Address) -> String {
+    match addr {
+        Address::List(addrs) => {
             addrs.iter()
-                .map(|addr| {
-                    if let Some(name) = &addr.name {
-                        format!("{} <{}>", name, addr.address)
-                    } else {
-                        addr.address.to_string()
-                    }
+                .map(|a| format_addr(a))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        Address::Group(groups) => {
+            groups.iter()
+                .map(|g| {
+                    let name = g.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
+                    format!("{}", name)
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
         }
-        HeaderValue::ContentType(ct) => format!("{}/{}", ct.maintype, ct.subtype),
-        HeaderValue::ContentDisposition(cd) => format!("{:?}", cd),
-        other => format!("{:?}", other),
+    }
+}
+
+fn format_addr(addr: &Addr) -> String {
+    if let Some(name) = &addr.name {
+        if let Some(email) = &addr.address {
+            format!("{} <{}>", name, email)
+        } else {
+            name.to_string()
+        }
+    } else if let Some(email) = &addr.address {
+        email.to_string()
+    } else {
+        String::new()
     }
 }
 
