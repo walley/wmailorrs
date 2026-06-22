@@ -67,7 +67,7 @@ pub struct App {
     pub current_uid: Option<u32>,
     pub mime_tree: Option<MimeTree>,
     pub mime_folded: HashSet<usize>,
-    pub mime_show_decoded: bool,
+    pub mime_show_decoded: HashSet<usize>,
     pub mime_focused_node: Option<usize>,
     pub content_scroll: u16,
     pub hex_data: Option<Vec<u8>>,
@@ -105,7 +105,7 @@ impl App {
             current_uid: None,
             mime_tree: None,
             mime_folded: HashSet::new(),
-            mime_show_decoded: true,
+            mime_show_decoded: HashSet::new(),
             mime_focused_node: None,
             content_scroll: 0,
             hex_data: None,
@@ -162,6 +162,7 @@ impl App {
                 self.current_raw = Some(msg.raw.clone());
                 self.mime_tree = MimeTree::from_raw(&msg.raw).ok();
                 self.mime_folded.clear();
+                self.mime_show_decoded.clear();
                 self.mime_focused_node = None;
                 self.content_scroll = 0;
                 self.content_mode = ContentMode::Source;
@@ -273,7 +274,7 @@ impl App {
         let Some(tree) = &self.mime_tree else {
             return Vec::new();
         };
-        tree.flatten_visible(&self.mime_folded, self.mime_show_decoded)
+        tree.flatten_visible(&self.mime_folded, &self.mime_show_decoded)
     }
 
     pub fn sync_mime_focus(&mut self) {
@@ -339,7 +340,13 @@ impl App {
     }
 
     pub fn toggle_decoded(&mut self) {
-        self.mime_show_decoded = !self.mime_show_decoded;
+        if let Some(id) = self.mime_focused_node {
+            if self.mime_show_decoded.contains(&id) {
+                self.mime_show_decoded.remove(&id);
+            } else {
+                self.mime_show_decoded.insert(id);
+            }
+        }
     }
 
     pub fn show_hex_for_focused(&mut self) -> bool {
@@ -366,7 +373,8 @@ impl App {
             .clone()
             .unwrap_or_else(|| format!("part-{}.bin", node.id));
         let path = config::download_dir()?.join(fname);
-        save_part(node, path.clone(), self.mime_show_decoded)?;
+        let decoded = self.mime_show_decoded.contains(&id);
+        save_part(node, path.clone(), decoded)?;
         Ok(path.display().to_string())
     }
 
