@@ -339,15 +339,26 @@ impl App {
         }
     }
 
-    pub fn toggle_decoded(&mut self) {
-        if let Some(id) = self.mime_focused_node {
-            if self.mime_show_decoded.contains(&id) {
-                self.mime_show_decoded.remove(&id);
-            } else {
-                self.mime_show_decoded.insert(id);
-            }
+pub fn toggle_decoded(&mut self) {
+    if let Some(id) = self.mime_focused_node {
+        // Auto-expand the part so you can see the body
+        if self.mime_folded.contains(&id) {
+            self.mime_folded.remove(&id);
         }
+        
+        // Toggle decoded state
+        if self.mime_show_decoded.contains(&id) {
+            self.mime_show_decoded.remove(&id);
+        } else {
+            self.mime_show_decoded.insert(id);
+        }
+        
+        // Force UI refresh
+        let max_scroll = self.content_line_count().saturating_sub(1) as u16;
+        self.content_scroll = self.content_scroll.min(max_scroll);
+        self.sync_mime_focus();
     }
+}
 
     pub fn show_hex_for_focused(&mut self) -> bool {
         let Some(id) = self.mime_focused_node else {

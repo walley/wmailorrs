@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use base64::Engine;
-use mailparse::{parse_mail, ParsedMail};
+use mail_parser::{Message, MessagePart, PartType};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -14,8 +14,6 @@ pub struct MimeNode {
     pub decoded_body: Vec<u8>,
     pub is_binary: bool,
     pub children: Vec<MimeNode>,
-    pub start_line: usize,
-    pub end_line: usize,
     pub boundary: Option<String>,
 }
 
@@ -27,11 +25,15 @@ pub struct MimeTree {
 
 impl MimeTree {
     pub fn from_raw(raw: &str) -> Result<Self> {
-        let mail = parse_mail(raw.as_bytes()).context("parse mail")?;
+        let msg = Message::parse(raw.as_bytes())
+            .context("Failed to parse email")?;
+        
         let root_lines: Vec<String> = raw.lines().map(String::from).collect();
         let mut nodes = Vec::new();
         let mut next_id = 0;
-        build_nodes(&mail, raw, &mut nodes, &mut next_id, &root_lines);
+        
+        build_nodes_from_parser(&msg, raw, &mut nodes, &mut next_id);
+        
         Ok(Self { nodes, root_lines })
     }
 
@@ -41,8 +43,8 @@ impl MimeTree {
 
     pub fn flatten_visible(
         &self,
-        folded: &std::collections::HashSet<usize>,
-        show_decoded: &std::collections::HashSet<usize>,
+        folded: &HashSet<usize>,
+        show_decoded: &HashSet<usize>,
     ) -> Vec<VisibleMimeLine> {
         let mut out = Vec::new();
         for node in &self.nodes {
@@ -72,70 +74,36 @@ pub enum VisibleLineKind {
     ChildBoundary,
 }
 
-/// Extract boundary from Content-Type header
-fn extract_boundary(ctype_header: &str) -> Option<String> {
-    for param in ctype_header.split(';') {
-        let param = param.trim();
-        if param.starts_with("boundary=") {
-            let boundary = param.strip_prefix("boundary=")?;
-            // Remove quotes if present
-            let boundary = boundary.trim_matches('"');
-            return Some(boundary.to_string());
-        }
-    }
-    None
-}
-
-/// Find the Content-Type header value
-fn get_content_type_header(mail: &ParsedMail<'_>) -> String {
-    mail.headers
-        .iter()
-        .find(|h| h.get_key().eq_ignore_ascii_case("Content-Type"))
-        .map(|h| h.get_value())
-        .unwrap_or_default()
-}
-
-fn build_nodes(
-    mail: &ParsedMail<'_>,
+fn build_nodes_from_parser(
+    msg: &Message,
     raw: &str,
     nodes: &mut Vec<MimeNode>,
     next_id: &mut usize,
-    root_lines: &[String],
 ) {
     let id = *next_id;
     *next_id += 1;
 
-    let content_type = mail.ctype.mimetype.clone();
-    let filename = mail
-        .get_content_disposition()
-        .params
-        .get("filename")
-        .cloned();
-    let encoding = mail
-        .headers
-        .iter()
-        .find(|h| h.get_key().eq_ignore_ascii_case("Content-Transfer-Encoding"))
-        .map(|h| h.get_value());
+    let content_type = msg.content_type().unwrap_or("application/octet-stream").to_string();
+    let filename = msg.attachment_name().map(|s| s.to_string());
+    let encoding = msg.transfer_encoding().map(|e| format!("{:?}", e));
     
-    let raw_body = mail.get_body_raw().unwrap_or_default();
-    let decoded_body = decode_part(mail);
-    let is_binary = is_probably_binary(&content_type, &decoded_body);
+    // Get raw and decoded bodies
+    let (raw_body, decoded_body) = extract_bodies(msg, raw);
+    
+    let is_binary = !msg.is_text();
+    
+    // Build raw header string
+    let raw_header = format!("{:?}", msg.headers());
 
-    let raw_header = mail
-        .headers
-        .iter()
-        .map(|h| format!("{}: {}", h.get_key(), h.get_value()))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let ctype_header = get_content_type_header(mail);
-    let boundary = extract_boundary(&ctype_header);
-
-    let (start_line, end_line) = find_part_lines(raw, &raw_header, &raw_body, root_lines);
+    let boundary = None; // mail-parser handles boundaries internally
 
     let mut children = Vec::new();
-    for sub in &mail.subparts {
-        build_nodes(sub, raw, &mut children, next_id, root_lines);
+    
+    // Handle multipart messages
+    if let Some(parts) = msg.parts() {
+        for part in parts {
+            build_nodes_from_parser(&part, raw, &mut children, next_id);
+        }
     }
 
     nodes.push(MimeNode {
@@ -148,40 +116,54 @@ fn build_nodes(
         decoded_body,
         is_binary,
         children,
-        start_line,
-        end_line,
         boundary,
     });
 }
 
-/// Find the line range for a MIME part in the raw email
-fn find_part_lines(raw: &str, headers: &str, body: &[u8], root_lines: &[String]) -> (usize, usize) {
-    let mut start = 0;
-    let mut end = root_lines.len();
+fn extract_bodies(msg: &Message, raw: &str) -> (Vec<u8>, Vec<u8>) {
+    // Get the raw body from the original message
+    let raw_body = if let Some(part_data) = get_raw_part_data(msg, raw) {
+        part_data
+    } else {
+        // Fallback: use the raw message bytes
+        msg.raw_message().to_vec()
+    };
+    
+    // Get decoded body
+    let decoded_body = if let Some(body) = msg.body_text(1024 * 1024) {
+        body.as_bytes().to_vec()
+    } else if let Some(contents) = msg.contents() {
+        contents.into()
+    } else {
+        raw_body.clone()
+    };
+    
+    (raw_body, decoded_body)
+}
 
-    // Try to find where the headers start
-    if let Some(header_pos) = raw.find(headers) {
-        let lines_before = raw[..header_pos].lines().count();
-        start = lines_before;
+fn get_raw_part_data(msg: &Message, raw: &str) -> Option<Vec<u8>> {
+    // Extract the raw data for this specific part from the source
+    // by finding its position in the raw message
+    let raw_bytes = raw.as_bytes();
+    let raw_msg = msg.raw_message();
+    
+    if let Some(pos) = find_subsequence(raw_bytes, raw_msg) {
+        Some(raw_bytes[pos..pos + raw_msg.len()].to_vec())
+    } else {
+        None
     }
+}
 
-    // Try to find where the body appears
-    if let Ok(body_str) = std::str::from_utf8(body) {
-        if let Some(body_pos) = raw.find(body_str) {
-            let lines_up_to_body = raw[..body_pos].lines().count();
-            let body_lines = body_str.lines().count();
-            end = lines_up_to_body + body_lines;
-        }
-    }
-
-    (start, end)
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn emit_node(
     node: &MimeNode,
     out: &mut Vec<VisibleMimeLine>,
-    folded: &std::collections::HashSet<usize>,
-    show_decoded: &std::collections::HashSet<usize>,
+    folded: &HashSet<usize>,
+    show_decoded: &HashSet<usize>,
     indent: usize,
 ) {
     let is_folded = folded.contains(&node.id);
@@ -191,16 +173,10 @@ fn emit_node(
         .unwrap_or_else(|| node.content_type.clone());
     let enc = node.encoding.as_deref().unwrap_or("none");
     
-    let boundary_info = node
-        .boundary
-        .as_ref()
-        .map(|b| format!(" [boundary={}]", b))
-        .unwrap_or_default();
-    
     out.push(VisibleMimeLine {
         node_id: Some(node.id),
         indent,
-        text: format!("[part {}] {label} ({enc}){boundary_info}", node.id),
+        text: format!("[part {}] {label} ({enc})", node.id),
         kind: VisibleLineKind::Summary,
         foldable: !node.children.is_empty() || !node.raw_body.is_empty(),
         folded: is_folded,
@@ -210,7 +186,6 @@ fn emit_node(
         return;
     }
 
-    // Show body or binary hint (omit headers)
     if node.is_binary {
         out.push(VisibleMimeLine {
             node_id: Some(node.id),
@@ -224,7 +199,7 @@ fn emit_node(
             folded: false,
         });
     } else if show_decoded.contains(&node.id) {
-        let text = String::from_utf8_lossy(&node.decoded_body).to_string();
+        let text = String::from_utf8_lossy(&node.decoded_body);
         for line in text.lines() {
             out.push(VisibleMimeLine {
                 node_id: Some(node.id),
@@ -236,7 +211,7 @@ fn emit_node(
             });
         }
     } else {
-        let text = String::from_utf8_lossy(&node.raw_body).to_string();
+        let text = String::from_utf8_lossy(&node.raw_body);
         for line in text.lines() {
             out.push(VisibleMimeLine {
                 node_id: Some(node.id),
@@ -249,46 +224,10 @@ fn emit_node(
         }
     }
 
-    // Show boundary markers for multipart
-    if !node.children.is_empty() {
-        if let Some(boundary) = &node.boundary {
-            out.push(VisibleMimeLine {
-                node_id: Some(node.id),
-                indent: indent + 1,
-                text: format!("--- boundary: {} ---", boundary),
-                kind: VisibleLineKind::ChildBoundary,
-                foldable: false,
-                folded: false,
-            });
-        }
-    }
-
     // Show children
     for child in &node.children {
         emit_node(child, out, folded, show_decoded, indent + 1);
     }
-}
-
-fn decode_part(mail: &ParsedMail<'_>) -> Vec<u8> {
-    mail.get_body()
-        .map(|s| s.into_bytes())
-        .unwrap_or_else(|_| mail.get_body_raw().unwrap_or_default())
-}
-
-fn is_probably_binary(content_type: &str, body: &[u8]) -> bool {
-    let ct = content_type.to_ascii_lowercase();
-    if ct.starts_with("text/") || ct.contains("message/rfc822") {
-        return false;
-    }
-    if body.is_empty() {
-        return false;
-    }
-    let sample = body.len().min(512);
-    let non_text = body[..sample]
-        .iter()
-        .filter(|&&b| b != b'\n' && b != b'\r' && b != b'\t' && !(32..=126).contains(&b))
-        .count();
-    non_text * 4 > sample
 }
 
 pub fn save_part(node: &MimeNode, path: PathBuf, decoded: bool) -> Result<()> {
@@ -299,13 +238,4 @@ pub fn save_part(node: &MimeNode, path: PathBuf, decoded: bool) -> Result<()> {
     };
     std::fs::write(&path, data).with_context(|| format!("write {}", path.display()))?;
     Ok(())
-}
-
-pub fn try_base64_decode(data: &[u8]) -> Vec<u8> {
-    if let Ok(s) = std::str::from_utf8(data) {
-        if let Ok(v) = base64::engine::general_purpose::STANDARD.decode(s.trim()) {
-            return v;
-        }
-    }
-    data.to_vec()
 }
