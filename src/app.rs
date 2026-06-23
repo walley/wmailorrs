@@ -160,14 +160,22 @@ impl App {
             ImapEvent::MessageFetched(msg) => {
                 self.current_uid = Some(msg.uid);
                 self.current_raw = Some(msg.raw.clone());
-                self.mime_tree = MimeTree::from_raw(&msg.raw).ok();
+                self.mime_tree = match MimeTree::from_raw(&msg.raw) {
+                    Ok(tree) => Some(tree),
+                    Err(e) => {
+                        self.status = format!("MIME parse error: {e}");
+                        None
+                    }
+                };
                 self.mime_folded.clear();
                 self.mime_show_decoded.clear();
                 self.mime_focused_node = None;
                 self.content_scroll = 0;
                 self.content_mode = ContentMode::Source;
                 self.sync_mime_focus();
-                self.status = format!("Fetched UID {}", msg.uid);
+                if self.mime_tree.is_some() {
+                    self.status = format!("Fetched UID {}", msg.uid);
+                }
             }
             ImapEvent::Error(e) => self.status = format!("Error: {e}"),
             ImapEvent::Status(s) => self.status = s,
@@ -482,8 +490,16 @@ pub fn toggle_decoded(&mut self) {
     }
 
     pub fn set_content_mode(&mut self, mode: ContentMode) {
+        if self.content_mode == mode {
+            return;
+        }
         self.content_mode = mode;
+        self.content_scroll = 0;
+        self.focus = FocusPanel::Content;
         if mode == ContentMode::MimeTree {
+            if self.mime_tree.is_none() {
+                self.status = "No MIME tree (fetch a message first)".into();
+            }
             self.sync_mime_focus();
         }
     }

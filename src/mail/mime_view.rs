@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use mail_parser::{Message, MessageParser, MimeHeaders, HeaderValue, Address, Addr, MessagePart};
+use mail_parser::{
+    Address, Addr, HeaderValue, Message, MessageParser, MessagePart, MimeHeaders, PartType,
+};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -35,7 +37,9 @@ impl MimeTree {
         let mut nodes = Vec::new();
         let mut next_id = 0;
 
-        build_nodes_from_parser(&msg, raw_bytes, &mut nodes, &mut next_id);
+        if let Some(root_part) = msg.parts.first() {
+            build_nodes_from_part(root_part, &msg, raw_bytes, &mut nodes, &mut next_id);
+        }
 
         Ok(Self {
             nodes,
@@ -81,7 +85,8 @@ pub enum VisibleLineKind {
     ChildBoundary,
 }
 
-fn build_nodes_from_parser(
+fn build_nodes_from_part(
+    part: &MessagePart,
     msg: &Message,
     raw: &[u8],
     nodes: &mut Vec<MimeNode>,
@@ -90,47 +95,63 @@ fn build_nodes_from_parser(
     let id = *next_id;
     *next_id += 1;
 
-    // ... existing code for content_type, filename, encoding, etc. ...
-    // Get content type - fields are c_type and c_subtype (not maintype/subtype)
-    let content_type = if let Some(ct) = msg.content_type() {
-        let subtype = ct.c_subtype.as_deref().unwrap_or("plain");
-        format!("{}/{}", ct.c_type, subtype)
+    let content_type = part
+        .content_type()
+        .map(|ct| {
+            let subtype = ct.c_subtype.as_deref().unwrap_or("plain");
+            format!("{}/{}", ct.c_type, subtype)
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    let filename = part.attachment_name().map(str::to_string);
+    let encoding = part
+        .content_transfer_encoding()
+        .map(str::to_string);
+
+    let h_start = part.raw_header_offset() as usize;
+    let b_start = part.raw_body_offset() as usize;
+    let b_end = part.raw_end_offset() as usize;
+
+    let raw_header = if h_start < b_start && b_start <= raw.len() {
+        String::from_utf8_lossy(&raw[h_start..b_start]).trim_end().to_string()
     } else {
-        "application/octet-stream".to_string()
+        format_part_headers(part)
     };
 
-    // Get filename from Content-Disposition header
-    let filename = msg.attachment_name().map(|s| s.to_string());
-
-    // Get transfer encoding - use header lookup instead
-    let encoding = msg.headers()
-        .iter()
-        .find(|h| h.name.to_string().eq_ignore_ascii_case("content-transfer-encoding"))
-        .and_then(|h| h.value.as_text())
-        .map(|s| s.to_string());
-
-    // Get raw and decoded bodies
-    let (raw_body, decoded_body) = extract_bodies(msg, raw);
-
-    // Check if binary (no text subtype)
-    let is_binary = if let Some(ct) = msg.content_type() {
-        ct.c_type.as_ref() != "text"
+    let raw_body = if b_start <= b_end && b_end <= raw.len() {
+        raw[b_start..b_end].to_vec()
     } else {
-        false
+        part.contents().to_vec()
     };
 
-    // Build raw header string from all headers
-    let raw_header = format_headers(msg);
+    let decoded_body = part.contents().to_vec();
+    let is_binary = part.is_binary();
 
-    let boundary = None; // mail-parser handles boundaries internally
+    let boundary = part.content_type().and_then(|ct| {
+        ct.attributes.as_ref()?.iter().find_map(|attr| {
+            if attr.name.eq_ignore_ascii_case("boundary") {
+                Some(attr.value.to_string())
+            } else {
+                None
+            }
+        })
+    });
 
     let mut children = Vec::new();
-    
-    // Use the message() method on MessagePart to get nested messages
-    for part in &msg.parts {
-        if let Some(sub_msg) = part.message() {
-            build_nodes_from_parser(sub_msg, raw, &mut children, next_id);
+    match &part.body {
+        PartType::Multipart(sub_ids) => {
+            for &part_id in sub_ids {
+                if let Some(sub) = msg.part(part_id) {
+                    build_nodes_from_part(sub, msg, raw, &mut children, next_id);
+                }
+            }
         }
+        PartType::Message(nested) => {
+            if let Some(nested_root) = nested.parts.first() {
+                build_nodes_from_part(nested_root, nested, raw, &mut children, next_id);
+            }
+        }
+        _ => {}
     }
 
     nodes.push(MimeNode {
@@ -147,120 +168,52 @@ fn build_nodes_from_parser(
     });
 }
 
-/*fn build_nodes_from_parser(
-    msg: &Message,
-    raw: &[u8],
-    nodes: &mut Vec<MimeNode>,
-    next_id: &mut usize,
-) {
-    let id = *next_id;
-    *next_id += 1;
-
-    // Get content type - fields are c_type and c_subtype (not maintype/subtype)
-    let content_type = if let Some(ct) = msg.content_type() {
-        let subtype = ct.c_subtype.as_deref().unwrap_or("plain");
-        format!("{}/{}", ct.c_type, subtype)
-    } else {
-        "application/octet-stream".to_string()
-    };
-
-    // Get filename from Content-Disposition header
-    let filename = msg.attachment_name().map(|s| s.to_string());
-
-    // Get transfer encoding - use header lookup instead
-    let encoding = msg.headers()
+fn format_part_headers(part: &MessagePart) -> String {
+    part.headers()
         .iter()
-        .find(|h| h.name.to_string().eq_ignore_ascii_case("content-transfer-encoding"))
-        .and_then(|h| h.value.as_text())
-        .map(|s| s.to_string());
-
-    // Get raw and decoded bodies
-    let (raw_body, decoded_body) = extract_bodies(msg, raw);
-
-    // Check if binary (no text subtype)
-    let is_binary = if let Some(ct) = msg.content_type() {
-        ct.c_type.as_ref() != "text"
-    } else {
-        false
-    };
-
-    // Build raw header string from all headers
-    let raw_header = format_headers(msg);
-
-    let boundary = None; // mail-parser handles boundaries internally
-
-    let mut children = Vec::new();
-
-    // Handle multipart messages - msg.parts() returns slice, not Option
-    for partx in msg.parts() {
-        if let Some(part_msg) = partx.as_message() {
-            build_nodes_from_parser(&part_msg, raw, &mut children, next_id);
-        }
-    }
-
-    nodes.push(MimeNode {
-        id,
-        content_type,
-        filename,
-        encoding,
-        raw_header,
-        raw_body,
-        decoded_body,
-        is_binary,
-        children,
-        boundary,
-    });
-}
-*/
-
-fn format_headers(msg: &Message) -> String {
-    let mut headers = String::new();
-    for header in msg.headers() {
-        let value_str = header_value_to_string(&header.value);
-        headers.push_str(&format!("{}: {}\n", header.name(), value_str));
-    }
-    headers
+        .map(|h| format!("{}: {}", h.name(), header_value_to_string(&h.value)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn header_value_to_string(value: &HeaderValue) -> String {
     match value {
         HeaderValue::Text(s) => s.to_string(),
-        HeaderValue::TextList(list) => list.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", "),
-        HeaderValue::DateTime(date) => format!("{:?}", date),
+        HeaderValue::TextList(list) => list
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        HeaderValue::DateTime(date) => format!("{date:?}"),
         HeaderValue::Address(addr) => format_address(addr),
         HeaderValue::ContentType(ct) => {
             let subtype = ct.c_subtype.as_deref().unwrap_or("plain");
             format!("{}/{}", ct.c_type, subtype)
         }
-        HeaderValue::Received(received) => format!("{:?}", received),
+        HeaderValue::Received(received) => format!("{received:?}"),
         HeaderValue::Empty => String::new(),
     }
 }
 
 fn format_address(addr: &Address) -> String {
     match addr {
-        Address::List(addrs) => {
-            addrs.iter()
-                .map(|a| format_addr(a))
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
-        Address::Group(groups) => {
-            groups.iter()
-                .map(|g| {
-                    let name = g.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
-                    format!("{}", name)
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
+        Address::List(addrs) => addrs
+            .iter()
+            .map(format_addr)
+            .collect::<Vec<_>>()
+            .join(", "),
+        Address::Group(groups) => groups
+            .iter()
+            .map(|g| g.name.as_ref().map(|n| n.to_string()).unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join(", "),
     }
 }
 
 fn format_addr(addr: &Addr) -> String {
     if let Some(name) = &addr.name {
         if let Some(email) = &addr.address {
-            format!("{} <{}>", name, email)
+            format!("{name} <{email}>")
         } else {
             name.to_string()
         }
@@ -269,42 +222,6 @@ fn format_addr(addr: &Addr) -> String {
     } else {
         String::new()
     }
-}
-
-fn extract_bodies(msg: &Message, raw: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    // Get decoded body first
-    let decoded_body = if let Some(text) = msg.body_text(0) {
-        text.as_bytes().to_vec()
-    } else if let Some(html) = msg.body_html(0) {
-        html.as_bytes().to_vec()
-    } else {
-        Vec::new()
-    };
-
-    // Get raw body by extracting from raw message
-    let raw_body = if let Some(pos) = find_body_start(raw) {
-        raw[pos..].to_vec()
-    } else {
-        raw.to_vec()
-    };
-
-    (raw_body, decoded_body)
-}
-
-fn find_body_start(raw: &[u8]) -> Option<usize> {
-    // Find the double CRLF or double LF that separates headers from body
-    if let Some(pos) = find_subsequence(raw, b"\r\n\r\n") {
-        Some(pos + 4)
-    } else if let Some(pos) = find_subsequence(raw, b"\n\n") {
-        Some(pos + 2)
-    } else {
-        None
-    }
-}
-
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len())
-        .position(|window| window == needle)
 }
 
 fn emit_node(
@@ -358,7 +275,7 @@ fn emit_node(
                 folded: false,
             });
         }
-    } else {
+    } else if !node.raw_body.is_empty() {
         let text = String::from_utf8_lossy(&node.raw_body);
         for line in text.lines() {
             out.push(VisibleMimeLine {
@@ -372,7 +289,6 @@ fn emit_node(
         }
     }
 
-    // Show children
     for child in &node.children {
         emit_node(child, out, folded, show_decoded, indent + 1);
     }
@@ -386,4 +302,40 @@ pub fn save_part(node: &MimeNode, path: PathBuf, decoded: bool) -> Result<()> {
     };
     std::fs::write(&path, data).with_context(|| format!("write {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_simple_plain_message() {
+        let raw = "From: a@b.com\r\nTo: c@d.com\r\nSubject: t\r\nContent-Type: text/plain\r\n\r\nhello\r\n";
+        let tree = MimeTree::from_raw(raw).unwrap();
+        assert!(!tree.nodes.is_empty());
+        let lines = tree.flatten_visible(&HashSet::new(), &HashSet::new());
+        assert!(lines.len() > 1);
+    }
+
+    #[test]
+    fn parse_multipart_message() {
+        let raw = concat!(
+            "From: a@b.com\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/alternative; boundary=\"b\"\r\n",
+            "\r\n",
+            "--b\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "plain\r\n",
+            "--b\r\n",
+            "Content-Type: text/html\r\n",
+            "\r\n",
+            "<p>html</p>\r\n",
+            "--b--\r\n",
+        );
+        let tree = MimeTree::from_raw(raw).unwrap();
+        assert_eq!(tree.nodes.len(), 1);
+        assert_eq!(tree.nodes[0].children.len(), 2);
+    }
 }
