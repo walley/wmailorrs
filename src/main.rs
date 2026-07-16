@@ -76,33 +76,60 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::F(10) | KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
-        KeyCode::Tab => app.cycle_focus(),
+        KeyCode::Tab => {
+            if app.focus == FocusPanel::Content && app.content_mode == ContentMode::MimeTree {
+                app.mime_move_down();
+            } else {
+                app.cycle_focus();
+            }
+        }
+        KeyCode::BackTab => {
+            if app.focus == FocusPanel::Content && app.content_mode == ContentMode::MimeTree {
+                app.mime_move_up();
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') => app.move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.move_down(),
         KeyCode::PageUp => match app.focus {
             FocusPanel::Folders | FocusPanel::Messages => app.page_up(),
             FocusPanel::Content => {
-                app.content_scroll = app.content_scroll.saturating_sub(10);
-                app.sync_mime_focus();
+                if app.content_mode == ContentMode::MimeTree {
+                    for _ in 0..10 {
+                        app.mime_move_up();
+                    }
+                } else {
+                    app.content_scroll = app.content_scroll.saturating_sub(10);
+                }
             }
         },
         KeyCode::PageDown => match app.focus {
             FocusPanel::Folders | FocusPanel::Messages => app.page_down(),
             FocusPanel::Content => {
-                let max = app.content_line_count().saturating_sub(1) as u16;
-                app.content_scroll = (app.content_scroll + 10).min(max);
-                app.sync_mime_focus();
+                if app.content_mode == ContentMode::MimeTree {
+                    for _ in 0..10 {
+                        app.mime_move_down();
+                    }
+                } else {
+                    let max = app.content_line_count().saturating_sub(1) as u16;
+                    app.content_scroll = (app.content_scroll + 10).min(max);
+                }
             }
         },
-        KeyCode::Enter => app.activate(),
+        KeyCode::Enter => {
+            if app.focus == FocusPanel::Content && app.content_mode == ContentMode::MimeTree {
+                app.mime_toggle_expand();
+            } else {
+                app.activate();
+            }
+        }
         KeyCode::Char('+') if app.focus == FocusPanel::Folders => app.open_folder(),
         KeyCode::Char(' ') if app.focus == FocusPanel::Content => app.toggle_mime_fold(),
         KeyCode::Char(' ') if app.focus == FocusPanel::Folders => app.open_folder(),
-        KeyCode::Char('o') => app.toggle_decoded(),
-        KeyCode::Char('x') => {
+        KeyCode::Char('o') if app.content_mode == ContentMode::MimeTree || app.content_mode == ContentMode::Source => app.toggle_decoded(),
+        KeyCode::Char('x') if app.content_mode == ContentMode::MimeTree => {
             let _ = app.show_hex_for_focused();
         }
-        KeyCode::Char('d') => {
+        KeyCode::Char('d') if app.content_mode == ContentMode::MimeTree => {
             if let Ok(p) = app.download_focused_part() {
                 app.status = format!("Saved {p}");
             }
@@ -117,6 +144,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             if app.content_mode == ContentMode::Hex {
                 app.content_mode = ContentMode::MimeTree;
+                app.content_scroll = 0;
+                app.sync_mime_focus();
             }
         }
         KeyCode::Char('/') if app.focus == FocusPanel::Messages => {

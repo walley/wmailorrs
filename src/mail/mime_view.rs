@@ -49,17 +49,30 @@ impl MimeTree {
     }
 
     pub fn node(&self, id: usize) -> Option<&MimeNode> {
-        self.nodes.iter().find(|n| n.id == id)
+        for node in &self.nodes {
+            if let Some(found) = find_node(node, id) {
+                return Some(found);
+            }
+        }
+        None
     }
 
     pub fn flatten_visible(
         &self,
         folded: &HashSet<usize>,
         show_decoded: &HashSet<usize>,
+        expanded_node: Option<usize>,
     ) -> Vec<VisibleMimeLine> {
         let mut out = Vec::new();
+        let child_ids: HashSet<usize> = self
+            .nodes
+            .iter()
+            .flat_map(|n| n.children.iter().map(|c| c.id))
+            .collect();
         for node in &self.nodes {
-            emit_node(node, &mut out, folded, show_decoded, 0);
+            if !child_ids.contains(&node.id) {
+                emit_node(node, &mut out, folded, show_decoded, 0, expanded_node);
+            }
         }
         out
     }
@@ -224,14 +237,26 @@ fn format_addr(addr: &Addr) -> String {
     }
 }
 
+fn find_node(node: &MimeNode, id: usize) -> Option<&MimeNode> {
+    if node.id == id {
+        return Some(node);
+    }
+    for child in &node.children {
+        if let Some(found) = find_node(child, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn emit_node(
     node: &MimeNode,
     out: &mut Vec<VisibleMimeLine>,
     folded: &HashSet<usize>,
     show_decoded: &HashSet<usize>,
     indent: usize,
+    expanded_node: Option<usize>,
 ) {
-    let is_folded = folded.contains(&node.id);
     let label = node
         .filename
         .clone()
@@ -244,53 +269,51 @@ fn emit_node(
         text: format!("[part {}] {label} ({enc})", node.id),
         kind: VisibleLineKind::Summary,
         foldable: !node.children.is_empty() || !node.raw_body.is_empty(),
-        folded: is_folded,
+        folded: false,
     });
 
-    if is_folded {
-        return;
-    }
-
-    if node.is_binary {
-        out.push(VisibleMimeLine {
-            node_id: Some(node.id),
-            indent: indent + 1,
-            text: format!(
-                "<binary {} bytes — press x for hex, d to download>",
-                node.raw_body.len()
-            ),
-            kind: VisibleLineKind::BinaryHint,
-            foldable: false,
-            folded: false,
-        });
-    } else if show_decoded.contains(&node.id) {
-        let text = String::from_utf8_lossy(&node.decoded_body);
-        for line in text.lines() {
+    if expanded_node == Some(node.id) {
+        if node.is_binary {
             out.push(VisibleMimeLine {
                 node_id: Some(node.id),
                 indent: indent + 1,
-                text: line.to_string(),
-                kind: VisibleLineKind::BodyDecoded,
+                text: format!(
+                    "<binary {} bytes — press x for hex, d to download>",
+                    node.raw_body.len()
+                ),
+                kind: VisibleLineKind::BinaryHint,
                 foldable: false,
                 folded: false,
             });
-        }
-    } else if !node.raw_body.is_empty() {
-        let text = String::from_utf8_lossy(&node.raw_body);
-        for line in text.lines() {
-            out.push(VisibleMimeLine {
-                node_id: Some(node.id),
-                indent: indent + 1,
-                text: line.to_string(),
-                kind: VisibleLineKind::BodyRaw,
-                foldable: false,
-                folded: false,
-            });
+        } else if show_decoded.contains(&node.id) {
+            let text = String::from_utf8_lossy(&node.decoded_body);
+            for line in text.lines() {
+                out.push(VisibleMimeLine {
+                    node_id: Some(node.id),
+                    indent: indent + 1,
+                    text: line.to_string(),
+                    kind: VisibleLineKind::BodyDecoded,
+                    foldable: false,
+                    folded: false,
+                });
+            }
+        } else if !node.raw_body.is_empty() {
+            let text = String::from_utf8_lossy(&node.raw_body);
+            for line in text.lines() {
+                out.push(VisibleMimeLine {
+                    node_id: Some(node.id),
+                    indent: indent + 1,
+                    text: line.to_string(),
+                    kind: VisibleLineKind::BodyRaw,
+                    foldable: false,
+                    folded: false,
+                });
+            }
         }
     }
 
     for child in &node.children {
-        emit_node(child, out, folded, show_decoded, indent + 1);
+        emit_node(child, out, folded, show_decoded, indent + 1, expanded_node);
     }
 }
 
@@ -313,8 +336,8 @@ mod tests {
         let raw = "From: a@b.com\r\nTo: c@d.com\r\nSubject: t\r\nContent-Type: text/plain\r\n\r\nhello\r\n";
         let tree = MimeTree::from_raw(raw).unwrap();
         assert!(!tree.nodes.is_empty());
-        let lines = tree.flatten_visible(&HashSet::new(), &HashSet::new());
-        assert!(lines.len() > 1);
+        let lines = tree.flatten_visible(&HashSet::new(), &HashSet::new(), None);
+        assert!(!lines.is_empty());
     }
 
     #[test]

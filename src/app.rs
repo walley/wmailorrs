@@ -70,7 +70,9 @@ pub struct App {
     pub mime_tree: Option<MimeTree>,
     pub mime_folded: HashSet<usize>,
     pub mime_show_decoded: HashSet<usize>,
+    pub mime_expanded: HashSet<usize>,
     pub mime_focused_node: Option<usize>,
+    pub mime_cursor: usize,
     pub content_scroll: u16,
     pub hex_data: Option<Vec<u8>>,
 
@@ -110,7 +112,9 @@ impl App {
             mime_tree: None,
             mime_folded: HashSet::new(),
             mime_show_decoded: HashSet::new(),
+            mime_expanded: HashSet::new(),
             mime_focused_node: None,
+            mime_cursor: 0,
             content_scroll: 0,
             hex_data: None,
             connect_form: ConnectForm::default(),
@@ -243,9 +247,12 @@ impl App {
                     self.message_list_state.select(Some(self.message_cursor));
                 }
             }
-            FocusPanel::Content if self.content_scroll > 0 => {
-                self.content_scroll -= 1;
-                self.sync_mime_focus();
+            FocusPanel::Content => {
+                if self.content_mode == ContentMode::MimeTree {
+                    self.mime_move_up();
+                } else if self.content_scroll > 0 {
+                    self.content_scroll -= 1;
+                }
             }
             _ => {}
         }
@@ -272,10 +279,13 @@ impl App {
                 }
             }
             FocusPanel::Content => {
-                let max = self.content_line_count().saturating_sub(1);
-                if (self.content_scroll as usize) < max {
-                    self.content_scroll += 1;
-                    self.sync_mime_focus();
+                if self.content_mode == ContentMode::MimeTree {
+                    self.mime_move_down();
+                } else {
+                    let max = self.content_line_count().saturating_sub(1);
+                    if (self.content_scroll as usize) < max {
+                        self.content_scroll += 1;
+                    }
                 }
             }
         }
@@ -333,23 +343,28 @@ impl App {
         let Some(tree) = &self.mime_tree else {
             return Vec::new();
         };
-        tree.flatten_visible(&self.mime_folded, &self.mime_show_decoded)
+        let expanded = self.mime_expanded.iter().copied().next();
+        tree.flatten_visible(&self.mime_folded, &self.mime_show_decoded, expanded)
+    }
+
+    pub fn mime_summary_lines(&self) -> Vec<crate::mail::VisibleMimeLine> {
+        let Some(tree) = &self.mime_tree else {
+            return Vec::new();
+        };
+        tree.flatten_visible(&self.mime_folded, &self.mime_show_decoded, None)
     }
 
     pub fn sync_mime_focus(&mut self) {
         if self.content_mode != ContentMode::MimeTree {
             return;
         }
-        let lines = self.mime_visible_lines();
+        let lines = self.mime_summary_lines();
         if lines.is_empty() {
             self.mime_focused_node = None;
             return;
         }
-        let idx = (self.content_scroll as usize).min(lines.len().saturating_sub(1));
-        self.mime_focused_node = lines[..=idx]
-            .iter()
-            .rev()
-            .find_map(|l| l.node_id);
+        let idx = self.mime_cursor.min(lines.len().saturating_sub(1));
+        self.mime_focused_node = lines[idx].node_id;
     }
 
     pub fn filtered_messages(&self) -> Vec<&MessageEntry> {
@@ -499,6 +514,31 @@ impl App {
         }
     }
 
+    pub fn mime_move_up(&mut self) {
+        if self.mime_cursor > 0 {
+            self.mime_cursor -= 1;
+            self.sync_mime_focus();
+        }
+    }
+
+    pub fn mime_move_down(&mut self) {
+        let count = self.mime_summary_lines().len();
+        if count > 0 && self.mime_cursor + 1 < count {
+            self.mime_cursor += 1;
+            self.sync_mime_focus();
+        }
+    }
+
+    pub fn mime_toggle_expand(&mut self) {
+        if let Some(id) = self.mime_focused_node {
+            if self.mime_expanded.contains(&id) {
+                self.mime_expanded.remove(&id);
+            } else {
+                self.mime_expanded.insert(id);
+            }
+        }
+    }
+
 pub fn toggle_decoded(&mut self) {
     if let Some(id) = self.mime_focused_node {
         // Auto-expand the part so you can see the body
@@ -512,31 +552,45 @@ pub fn toggle_decoded(&mut self) {
         } else {
             self.mime_show_decoded.insert(id);
         }
-        
+
         // Force UI refresh
         let max_scroll = self.content_line_count().saturating_sub(1) as u16;
         self.content_scroll = self.content_scroll.min(max_scroll);
         self.sync_mime_focus();
+    } else {
+        self.status = "No part selected".into();
     }
 }
 
     pub fn show_hex_for_focused(&mut self) -> bool {
         let Some(id) = self.mime_focused_node else {
+            self.status = "No part selected".into();
             return false;
         };
         let Some(tree) = self.mime_tree.as_ref() else {
+            self.status = "No MIME tree".into();
             return false;
         };
         let Some(node) = tree.node(id) else {
+            self.status = format!("Part {} not found", id);
             return false;
         };
-        self.hex_data = Some(node.raw_body.clone());
+        let data = if !node.decoded_body.is_empty() {
+            node.decoded_body.clone()
+        } else {
+            node.raw_body.clone()
+        };
+        if data.is_empty() {
+            self.status = "Part has no data".into();
+            return false;
+        }
+        self.hex_data = Some(data);
         self.content_mode = ContentMode::Hex;
         true
     }
 
     pub fn download_focused_part(&mut self) -> Result<String> {
-        let id = self.mime_focused_node.context("no part focused")?;
+        let id = self.mime_focused_node.context("no part selected")?;
         let tree = self.mime_tree.as_ref().context("no mime tree")?;
         let node = tree.node(id).context("unknown part")?;
         let fname = node
@@ -671,6 +725,7 @@ pub fn toggle_decoded(&mut self) {
         }
         self.content_mode = mode;
         self.content_scroll = 0;
+        self.mime_cursor = 0;
         self.focus = FocusPanel::Content;
         if mode == ContentMode::MimeTree {
             if self.mime_tree.is_none() {

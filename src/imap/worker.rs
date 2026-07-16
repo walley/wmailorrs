@@ -138,14 +138,14 @@ fn handle_command(state: &mut WorkerState, cmd: ImapCommand, evt_tx: &Sender<Ima
             let start = total.saturating_sub(offset).max(1);
             let end = start.saturating_sub(limit - 1).max(1);
             let seq_set = format!("{end}:{start}");
-            let q = "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])";
+            let q = "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])";
             let fetches = session.fetch(&seq_set, q)?;
             let mut messages = Vec::new();
             for f in fetches.iter() {
                 let uid = f.uid.ok_or_else(|| anyhow!("missing uid"))?;
                 let size = f.size.unwrap_or(0);
                 let header = f
-                    .body()
+                    .header()
                     .and_then(|b| std::str::from_utf8(b).ok())
                     .unwrap_or("");
                 let summary = parse_header_summary(header);

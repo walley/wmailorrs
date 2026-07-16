@@ -1,9 +1,9 @@
 use crate::app::{App, ContentMode, Dialog, FocusPanel};
-use crate::mail::{hex_lines, highlight_raw_source};
+use crate::mail::{hex_lines, highlight_raw_source, image_to_lines_fitted};
 use crate::ui::keybar::{format_keybar, keybar_hints};
 use crate::ui::menu::{MenuBarItem, MenuState, MENU_BAR};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Scrollbar,
@@ -200,20 +200,64 @@ fn draw_content(f: &mut Frame, area: Rect, app: &App) {
             .unwrap_or_else(|| vec![Line::from("(no message)")]),
         ContentMode::MimeTree => {
             let mut out = Vec::new();
-            let scroll = app.content_scroll as usize;
-            for (i, (text, kind, node_id)) in app.mime_lines_for_display().into_iter().enumerate() {
-                let mut style = match kind {
-                    crate::mail::VisibleLineKind::Summary => app.theme.mime_boundary_style(),
-                    crate::mail::VisibleLineKind::HeaderBlock => app.theme.header_line_style(&text),
-                    crate::mail::VisibleLineKind::BinaryHint => app.theme.mime_folded_style(),
-                    _ => app.theme.body_style(),
-                };
-                if i == scroll {
-                    style = style.bg(app.theme.selection.to_color());
-                } else if app.mime_focused_node == node_id && node_id.is_some() {
-                    style = style.add_modifier(Modifier::UNDERLINED);
+            let expanded_is_image = app
+                .mime_expanded
+                .iter()
+                .next()
+                .and_then(|id| app.mime_tree.as_ref()?.node(*id))
+                .map(|n| n.content_type.starts_with("image/"))
+                .unwrap_or(false);
+
+            if expanded_is_image {
+                if let Some(id) = app.mime_expanded.iter().next() {
+                    if let Some(tree) = &app.mime_tree {
+                        if let Some(node) = tree.node(*id) {
+                            let data = if !node.decoded_body.is_empty() {
+                                &node.decoded_body
+                            } else {
+                                &node.raw_body
+                            };
+                            if !data.is_empty() {
+                                let label = format!(
+                                    "[part {}] {}",
+                                    node.id,
+                                    node.filename
+                                        .as_deref()
+                                        .unwrap_or(&node.content_type)
+                                );
+                                out.push(Line::from(Span::styled(
+                                    label,
+                                    app.theme.mime_boundary_style(),
+                                )));
+                                let img_w = inner.width.saturating_sub(2) as u32;
+                                let img_h = inner.height.saturating_sub(2) as u32;
+                                let img_lines = image_to_lines_fitted(data, img_w, img_h);
+                                out.extend(img_lines);
+                            }
+                        }
+                    }
                 }
-                out.push(Line::from(Span::styled(text, style)));
+            } else {
+                for (text, kind, node_id) in app.mime_lines_for_display().into_iter() {
+                    let mut style = match kind {
+                        crate::mail::VisibleLineKind::Summary => {
+                            app.theme.mime_boundary_style()
+                        }
+                        crate::mail::VisibleLineKind::HeaderBlock => {
+                            app.theme.header_line_style(&text)
+                        }
+                        crate::mail::VisibleLineKind::BinaryHint => {
+                            app.theme.mime_folded_style()
+                        }
+                        _ => app.theme.body_style(),
+                    };
+                    if kind == crate::mail::VisibleLineKind::Summary
+                        && node_id == app.mime_focused_node
+                    {
+                        style = app.theme.selection_style();
+                    }
+                    out.push(Line::from(Span::styled(text, style)));
+                }
             }
             if out.is_empty() {
                 out.push(Line::from("(fetch a message first)"));
