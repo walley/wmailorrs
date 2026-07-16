@@ -33,26 +33,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn draw_menu_bar(f: &mut Frame, area: Rect, app: &App) {
     let mut spans = Vec::new();
+    let menu_open = app.menu.open_bar.is_some();
     for (i, (label, item)) in MENU_BAR.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::raw("  "));
+            spans.push(Span::styled("  ", app.theme.menu_style()));
         }
-        let style = if app.menu.open_bar == Some(*item) {
-            app.theme.menu_style().add_modifier(Modifier::REVERSED)
+        let style = if menu_open && app.menu.open_bar == Some(*item) {
+            // Selected main menu item: white on black
+            app.theme.menu_selected_style()
+        } else if menu_open {
+            // Menu is open but this is not the selected item: white on cyan
+            app.theme.menu_active_style()
         } else {
+            // Menu is not open: black on cyan
             app.theme.menu_style()
         };
         spans.push(Span::styled(format!(" {label} "), style));
     }
-    spans.push(Span::raw("  "));
-    let conn = app
-        .connection_name
-        .as_deref()
-        .unwrap_or("offline");
-    spans.push(Span::styled(
-        format!("│ {conn} │ {} ", app.status),
-        Style::default().fg(app.theme.status_ok.to_color()),
-    ));
+    let remaining = area.width as usize;
+    let used: usize = spans.iter().map(|s| s.width()).sum();
+    if remaining > used {
+        spans.push(Span::styled(
+            " ".repeat(remaining - used),
+            app.theme.menu_style(),
+        ));
+    }
     let p = Paragraph::new(Line::from(spans));
     f.render_widget(p, area);
 }
@@ -96,16 +101,43 @@ fn draw_panels(f: &mut Frame, area: Rect, app: &mut App) {
 fn draw_folders(f: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focus == FocusPanel::Folders;
     app.clamp_folder_cursor();
-    let items: Vec<ListItem> = app
-        .folders
+    let block = panel_block("Folders", focused, app);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    app.folder_panel_height = inner.height;
+
+    let mut display_folders = app.display_folders();
+    if !app.current_folder_path.is_empty() {
+        display_folders.insert(0, "..".to_string());
+    }
+
+    let items: Vec<ListItem> = display_folders
         .iter()
-        .map(|fd| ListItem::new(fd.name.as_str()))
+        .map(|name| {
+            let display_name = if name == ".." {
+                "..".to_string()
+            } else if app.has_subfolders(name) {
+                format!("[{}]", name)
+            } else {
+                name.to_string()
+            };
+            ListItem::new(display_name)
+        })
         .collect();
     let list = List::new(items)
-        .block(panel_block("Folders", focused, app))
         .highlight_style(app.theme.selection_style())
         .highlight_symbol("▸ ");
-    f.render_stateful_widget(list, area, &mut app.folder_list_state);
+    f.render_stateful_widget(list, inner, &mut app.folder_list_state);
+
+    let folder_count = display_folders.len();
+    if folder_count > inner.height as usize {
+        let mut sb_state = ratatui::widgets::ScrollbarState::default()
+            .content_length(folder_count)
+            .position(app.folder_cursor);
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        f.render_stateful_widget(sb, inner, &mut sb_state);
+    }
 }
 
 fn draw_messages(f: &mut Frame, area: Rect, app: &mut App) {
@@ -147,7 +179,15 @@ fn draw_content(f: &mut Frame, area: Rect, app: &App) {
         }
         ContentMode::Hex => "Hex view",
     };
-    let block = panel_block(title, focused, app);
+
+    let conn = app.connection_name.as_deref().unwrap_or("offline");
+    let status_text = format!("{conn}: {}", app.status);
+
+    let mut block = panel_block(title, focused, app);
+    block = block.title_bottom(Span::styled(
+        format!(" {status_text} "),
+        Style::default().fg(app.theme.status_ok.to_color()),
+    ));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -234,10 +274,11 @@ fn draw_dropdown_menu(f: &mut Frame, app: &App) {
     let w = 36u16;
     let h = (items.len() as u16 + 2).min(12);
     let x = match bar {
-        MenuBarItem::Server => 1,
-        MenuBarItem::Message => 10,
-        MenuBarItem::View => 22,
+        MenuBarItem::Server | MenuBarItem::UserFolders => 1,
+        MenuBarItem::Message | MenuBarItem::UserMessages => 10,
+        MenuBarItem::View | MenuBarItem::UserContent => 22,
         MenuBarItem::Colors => 30,
+        MenuBarItem::Main => 1,
     };
     let area = Rect {
         x,
@@ -250,21 +291,27 @@ fn draw_dropdown_menu(f: &mut Frame, app: &App) {
         .iter()
         .enumerate()
         .map(|(i, it)| {
-            let style = if i == app.menu.cursor {
-                app.theme.selection_style()
+            let is_selected = i == app.menu.cursor;
+            let label_style = if is_selected {
+                app.theme.menu_selected_style()
             } else {
                 app.theme.menu_style()
             };
             let short = it.shortcut.as_deref().unwrap_or("");
+            let short_style = if is_selected {
+                app.theme.menu_shortcut_style()
+            } else {
+                app.theme.menu_style()
+            };
             Line::from(vec![
-                Span::styled(format!(" {:<24}", it.label), style),
-                Span::styled(format!("{short:>6} ", short = short), style),
+                Span::styled(format!(" {:<24}", it.label), label_style),
+                Span::styled(format!("{short:>6} ", short = short), short_style),
             ])
         })
         .collect();
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(app.theme.panel_border_style())
+        .border_style(app.theme.menu_border_style())
         .style(app.theme.menu_style());
     let p = Paragraph::new(lines).block(block);
     f.render_widget(p, area);

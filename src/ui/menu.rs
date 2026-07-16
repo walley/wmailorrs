@@ -1,9 +1,13 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuBarItem {
+    Main,
     Server,
     Message,
     View,
     Colors,
+    UserFolders,
+    UserMessages,
+    UserContent,
 }
 
 #[derive(Debug, Clone)]
@@ -15,6 +19,7 @@ pub struct MenuItem {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
+    Noop,
     Connect,
     Disconnect,
     SaveConnection,
@@ -31,6 +36,9 @@ pub enum MenuAction {
     ShowMimeTreeView,
     EditColors,
     ResetColors,
+    SetThemeDefault,
+    SetThemeMidnight,
+    SetThemeLight,
     Quit,
 }
 
@@ -51,6 +59,12 @@ impl Default for MenuState {
 impl MenuState {
     pub fn items_for(bar: MenuBarItem) -> Vec<MenuItem> {
         match bar {
+            MenuBarItem::Main => vec![
+                item("Server", "s", MenuAction::Noop),
+                item("Message", "m", MenuAction::Noop),
+                item("View", "v", MenuAction::Noop),
+                item("Colors", "c", MenuAction::Noop),
+            ],
             MenuBarItem::Server => vec![
                 item("Connect…", "F3", MenuAction::Connect),
                 item("Disconnect", "F4", MenuAction::Disconnect),
@@ -73,8 +87,19 @@ impl MenuState {
                 item("Hex view", "x", MenuAction::ShowHex),
             ],
             MenuBarItem::Colors => vec![
-                item("Edit theme (saved on exit)", "c", MenuAction::EditColors),
+                item("Default theme", "1", MenuAction::SetThemeDefault),
+                item("Midnight theme", "2", MenuAction::SetThemeMidnight),
+                item("Light theme", "3", MenuAction::SetThemeLight),
                 item("Reset to defaults", "r", MenuAction::ResetColors),
+            ],
+            MenuBarItem::UserFolders => vec![
+                item("--- Folders Panel ---", "", MenuAction::Noop),
+            ],
+            MenuBarItem::UserMessages => vec![
+                item("--- Messages Panel ---", "", MenuAction::Noop),
+            ],
+            MenuBarItem::UserContent => vec![
+                item("--- Content Panel ---", "", MenuAction::Noop),
             ],
         }
     }
@@ -88,15 +113,23 @@ impl MenuState {
         self.open_bar = None;
     }
 
-    pub fn move_up(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
+    pub fn move_up(&mut self, len: usize) {
+        if len > 0 {
+            self.cursor = if self.cursor > 0 {
+                self.cursor - 1
+            } else {
+                len - 1
+            };
         }
     }
 
     pub fn move_down(&mut self, len: usize) {
-        if self.cursor + 1 < len {
-            self.cursor += 1;
+        if len > 0 {
+            self.cursor = if self.cursor + 1 < len {
+                self.cursor + 1
+            } else {
+                0
+            };
         }
     }
 
@@ -107,16 +140,20 @@ impl MenuState {
                 MenuBarItem::Message => 1,
                 MenuBarItem::View => 2,
                 MenuBarItem::Colors => 3,
+                _ => 0,
             };
-            if current_index > 0 {
-                let new_bar = match current_index - 1 {
-                    0 => MenuBarItem::Server,
-                    1 => MenuBarItem::Message,
-                    2 => MenuBarItem::View,
-                    _ => MenuBarItem::Colors,
-                };
-                self.open(new_bar);
-            }
+            let new_index = if current_index > 0 {
+                current_index - 1
+            } else {
+                3
+            };
+            let new_bar = match new_index {
+                0 => MenuBarItem::Server,
+                1 => MenuBarItem::Message,
+                2 => MenuBarItem::View,
+                _ => MenuBarItem::Colors,
+            };
+            self.open(new_bar);
         }
     }
 
@@ -127,16 +164,20 @@ impl MenuState {
                 MenuBarItem::Message => 1,
                 MenuBarItem::View => 2,
                 MenuBarItem::Colors => 3,
+                _ => 3,
             };
-            if current_index < 3 {
-                let new_bar = match current_index + 1 {
-                    0 => MenuBarItem::Server,
-                    1 => MenuBarItem::Message,
-                    2 => MenuBarItem::View,
-                    _ => MenuBarItem::Colors,
-                };
-                self.open(new_bar);
-            }
+            let new_index = if current_index < 3 {
+                current_index + 1
+            } else {
+                0
+            };
+            let new_bar = match new_index {
+                0 => MenuBarItem::Server,
+                1 => MenuBarItem::Message,
+                2 => MenuBarItem::View,
+                _ => MenuBarItem::Colors,
+            };
+            self.open(new_bar);
         }
     }
 }

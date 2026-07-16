@@ -1,6 +1,13 @@
 use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThemePreset {
+    Default,
+    Midnight,
+    Light,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Theme {
     pub header_bg: ColorDef,
@@ -26,6 +33,11 @@ pub struct Theme {
     pub keybar_fg: ColorDef,
     pub menu_bg: ColorDef,
     pub menu_fg: ColorDef,
+    pub menu_active_fg: ColorDef,
+    pub menu_selected_bg: ColorDef,
+    pub menu_selected_fg: ColorDef,
+    pub menu_shortcut_fg: ColorDef,
+    pub menu_border: ColorDef,
     pub status_ok: ColorDef,
     pub status_err: ColorDef,
 }
@@ -45,132 +57,86 @@ impl ColorDef {
 
 impl Default for Theme {
     fn default() -> Self {
+        Self::midnight()
+    }
+}
+
+impl Theme {
+    pub fn midnight() -> Self {
         Self {
-            header_bg: ColorDef {
-                r: 30,
-                g: 30,
-                b: 60,
-            },
-            header_received: ColorDef {
-                r: 180,
-                g: 220,
-                b: 255,
-            },
-            header_x: ColorDef {
-                r: 200,
-                g: 160,
-                b: 255,
-            },
-            header_from: ColorDef {
-                r: 120,
-                g: 255,
-                b: 160,
-            },
-            header_to: ColorDef {
-                r: 255,
-                g: 200,
-                b: 120,
-            },
-            header_delivery: ColorDef {
-                r: 255,
-                g: 180,
-                b: 200,
-            },
-            header_date: ColorDef {
-                r: 255,
-                g: 255,
-                b: 140,
-            },
-            header_normal: ColorDef {
-                r: 220,
-                g: 220,
-                b: 220,
-            },
-            body_normal: ColorDef {
-                r: 200,
-                g: 200,
-                b: 200,
-            },
-            mime_boundary: ColorDef {
-                r: 140,
-                g: 200,
-                b: 200,
-            },
-            mime_folded: ColorDef {
-                r: 100,
-                g: 140,
-                b: 140,
-            },
-            hex_address: ColorDef {
-                r: 120,
-                g: 120,
-                b: 180,
-            },
-            hex_bytes: ColorDef {
-                r: 180,
-                g: 220,
-                b: 180,
-            },
-            hex_ascii: ColorDef {
-                r: 200,
-                g: 200,
-                b: 160,
-            },
-            panel_border: ColorDef {
-                r: 80,
-                g: 80,
-                b: 120,
-            },
-            panel_focus_border: ColorDef {
-                r: 255,
-                g: 220,
-                b: 80,
-            },
-            panel_title: ColorDef {
-                r: 180,
-                g: 200,
-                b: 255,
-            },
-            panel_focus_title: ColorDef {
-                r: 255,
-                g: 255,
-                b: 255,
-            },
-            selection: ColorDef {
-                r: 60,
-                g: 80,
-                b: 140,
-            },
-            keybar_bg: ColorDef {
-                r: 20,
-                g: 20,
-                b: 30,
-            },
-            keybar_fg: ColorDef {
-                r: 220,
-                g: 220,
-                b: 100,
-            },
-            menu_bg: ColorDef {
-                r: 0,
-                g: 0,
-                b: 128,
-            },
-            menu_fg: ColorDef {
-                r: 255,
-                g: 255,
-                b: 255,
-            },
-            status_ok: ColorDef {
-                r: 120,
-                g: 255,
-                b: 120,
-            },
-            status_err: ColorDef {
-                r: 255,
-                g: 100,
-                b: 100,
-            },
+            header_bg: ColorDef { r: 0, g: 0, b: 170 },
+            header_received: ColorDef { r: 170, g: 170, b: 255 },
+            header_x: ColorDef { r: 255, g: 170, b: 255 },
+            header_from: ColorDef { r: 0, g: 255, b: 0 },
+            header_to: ColorDef { r: 255, g: 170, b: 0 },
+            header_delivery: ColorDef { r: 255, g: 170, b: 170 },
+            header_date: ColorDef { r: 255, g: 255, b: 0 },
+            header_normal: ColorDef { r: 170, g: 170, b: 170 },
+            body_normal: ColorDef { r: 170, g: 170, b: 170 },
+            mime_boundary: ColorDef { r: 0, g: 170, b: 170 },
+            mime_folded: ColorDef { r: 0, g: 128, b: 128 },
+            hex_address: ColorDef { r: 170, g: 170, b: 255 },
+            hex_bytes: ColorDef { r: 0, g: 255, b: 0 },
+            hex_ascii: ColorDef { r: 170, g: 170, b: 0 },
+            panel_border: ColorDef { r: 170, g: 170, b: 170 },
+            panel_focus_border: ColorDef { r: 255, g: 255, b: 0 },
+            panel_title: ColorDef { r: 170, g: 170, b: 170 },
+            panel_focus_title: ColorDef { r: 255, g: 255, b: 255 },
+            selection: ColorDef { r: 0, g: 0, b: 0 },  // black text on cyan bg
+            keybar_bg: ColorDef { r: 170, g: 170, b: 170 },
+            keybar_fg: ColorDef { r: 0, g: 0, b: 0 },
+            menu_bg: ColorDef { r: 0, g: 170, b: 170 },  // cyan background
+            menu_fg: ColorDef { r: 0, g: 0, b: 0 },  // black text (inactive)
+            menu_active_fg: ColorDef { r: 255, g: 255, b: 255 },  // white text (active)
+            menu_selected_bg: ColorDef { r: 0, g: 0, b: 0 },  // black background (selected main menu item)
+            menu_selected_fg: ColorDef { r: 255, g: 255, b: 255 },  // white text (selected main menu item)
+            menu_shortcut_fg: ColorDef { r: 255, g: 255, b: 0 },  // yellow shortcut
+            menu_border: ColorDef { r: 255, g: 255, b: 255 },  // white border
+            status_ok: ColorDef { r: 0, g: 255, b: 0 },
+            status_err: ColorDef { r: 255, g: 0, b: 0 },
+        }
+    }
+
+    pub fn light() -> Self {
+        Self {
+            header_bg: ColorDef { r: 255, g: 255, b: 255 },
+            header_received: ColorDef { r: 0, g: 0, b: 170 },
+            header_x: ColorDef { r: 170, g: 0, b: 170 },
+            header_from: ColorDef { r: 0, g: 128, b: 0 },
+            header_to: ColorDef { r: 170, g: 85, b: 0 },
+            header_delivery: ColorDef { r: 170, g: 0, b: 0 },
+            header_date: ColorDef { r: 128, g: 128, b: 0 },
+            header_normal: ColorDef { r: 0, g: 0, b: 0 },
+            body_normal: ColorDef { r: 0, g: 0, b: 0 },
+            mime_boundary: ColorDef { r: 0, g: 128, b: 128 },
+            mime_folded: ColorDef { r: 128, g: 128, b: 128 },
+            hex_address: ColorDef { r: 0, g: 0, b: 170 },
+            hex_bytes: ColorDef { r: 0, g: 128, b: 0 },
+            hex_ascii: ColorDef { r: 128, g: 128, b: 0 },
+            panel_border: ColorDef { r: 128, g: 128, b: 128 },
+            panel_focus_border: ColorDef { r: 170, g: 0, b: 0 },
+            panel_title: ColorDef { r: 0, g: 0, b: 128 },
+            panel_focus_title: ColorDef { r: 170, g: 0, b: 0 },
+            selection: ColorDef { r: 0, g: 0, b: 0 },  // black text
+            keybar_bg: ColorDef { r: 220, g: 220, b: 220 },
+            keybar_fg: ColorDef { r: 0, g: 0, b: 0 },
+            menu_bg: ColorDef { r: 220, g: 220, b: 220 },  // light gray background
+            menu_fg: ColorDef { r: 0, g: 0, b: 0 },  // black text
+            menu_active_fg: ColorDef { r: 255, g: 255, b: 255 },
+            menu_selected_bg: ColorDef { r: 0, g: 0, b: 170 },  // blue background for selected
+            menu_selected_fg: ColorDef { r: 255, g: 255, b: 255 },  // white text for selected
+            menu_shortcut_fg: ColorDef { r: 0, g: 0, b: 170 },  // blue shortcut
+            menu_border: ColorDef { r: 0, g: 0, b: 170 },  // blue border
+            status_ok: ColorDef { r: 0, g: 128, b: 0 },
+            status_err: ColorDef { r: 170, g: 0, b: 0 },
+        }
+    }
+
+    pub fn from_preset(preset: ThemePreset) -> Self {
+        match preset {
+            ThemePreset::Default => Theme::midnight(),
+            ThemePreset::Midnight => Theme::midnight(),
+            ThemePreset::Light => Theme::light(),
         }
     }
 }
@@ -250,6 +216,28 @@ impl Theme {
         Style::default()
             .bg(self.menu_bg.to_color())
             .fg(self.menu_fg.to_color())
+    }
+
+    pub fn menu_active_style(&self) -> Style {
+        Style::default()
+            .bg(self.menu_bg.to_color())
+            .fg(self.menu_active_fg.to_color())
+    }
+
+    pub fn menu_selected_style(&self) -> Style {
+        Style::default()
+            .bg(self.menu_selected_bg.to_color())
+            .fg(self.menu_selected_fg.to_color())
+    }
+
+    pub fn menu_shortcut_style(&self) -> Style {
+        Style::default()
+            .bg(self.menu_selected_bg.to_color())
+            .fg(self.menu_shortcut_fg.to_color())
+    }
+
+    pub fn menu_border_style(&self) -> Style {
+        Style::default().fg(self.menu_border.to_color())
     }
 
     pub fn hex_address_style(&self) -> Style {

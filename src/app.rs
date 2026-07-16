@@ -2,7 +2,7 @@ use crate::config::{self, ConnectionProfile};
 use crate::imap::{FolderEntry, ImapCommand, ImapEvent, ImapWorker, MessageEntry};
 use crate::mail::{save_part, MimeTree, VisibleLineKind};
 use crate::theme::Theme;
-use crate::ui::menu::{MenuAction, MenuState};
+use crate::ui::menu::{MenuBarItem, MenuAction, MenuState};
 use anyhow::{Context, Result};
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
@@ -56,6 +56,8 @@ pub struct App {
     pub folders: Vec<FolderEntry>,
     pub folder_cursor: usize,
     pub folder_list_state: ListState,
+    pub folder_panel_height: u16,
+    pub current_folder_path: Vec<String>,
     pub selected_folder: Option<String>,
 
     pub messages: Vec<MessageEntry>,
@@ -96,6 +98,8 @@ impl App {
             folders: Vec::new(),
             folder_cursor: 0,
             folder_list_state: ListState::default(),
+            folder_panel_height: 0,
+            current_folder_path: Vec::new(),
             selected_folder: None,
             messages: Vec::new(),
             message_cursor: 0,
@@ -191,11 +195,16 @@ impl App {
     }
 
     pub fn clamp_folder_cursor(&mut self) {
-        if self.folders.is_empty() {
+        let mut display_folders = self.display_folders();
+        if !self.current_folder_path.is_empty() {
+            display_folders.insert(0, "..".to_string());
+        }
+        let count = display_folders.len();
+        if count == 0 {
             self.folder_cursor = 0;
             self.folder_list_state.select(None);
-        } else if self.folder_cursor >= self.folders.len() {
-            self.folder_cursor = self.folders.len() - 1;
+        } else if self.folder_cursor >= count {
+            self.folder_cursor = count - 1;
             self.folder_list_state.select(Some(self.folder_cursor));
         } else {
             self.folder_list_state.select(Some(self.folder_cursor));
@@ -218,8 +227,13 @@ impl App {
     pub fn move_up(&mut self) {
         match self.focus {
             FocusPanel::Folders => {
-                if self.folder_cursor > 0 {
-                    self.folder_cursor -= 1;
+                let count = self.display_folder_count();
+                if count > 0 {
+                    self.folder_cursor = if self.folder_cursor > 0 {
+                        self.folder_cursor - 1
+                    } else {
+                        count - 1
+                    };
                     self.folder_list_state.select(Some(self.folder_cursor));
                 }
             }
@@ -240,8 +254,13 @@ impl App {
     pub fn move_down(&mut self) {
         match self.focus {
             FocusPanel::Folders => {
-                if self.folder_cursor + 1 < self.folders.len() {
-                    self.folder_cursor += 1;
+                let count = self.display_folder_count();
+                if count > 0 {
+                    self.folder_cursor = if self.folder_cursor + 1 < count {
+                        self.folder_cursor + 1
+                    } else {
+                        0
+                    };
                     self.folder_list_state.select(Some(self.folder_cursor));
                 }
             }
@@ -259,6 +278,38 @@ impl App {
                     self.sync_mime_focus();
                 }
             }
+        }
+    }
+
+    pub fn page_up(&mut self) {
+        let page_size = self.folder_panel_height as usize;
+        match self.focus {
+            FocusPanel::Folders => {
+                self.folder_cursor = self.folder_cursor.saturating_sub(page_size);
+                self.folder_list_state.select(Some(self.folder_cursor));
+            }
+            FocusPanel::Messages => {
+                self.message_cursor = self.message_cursor.saturating_sub(page_size);
+                self.message_list_state.select(Some(self.message_cursor));
+            }
+            FocusPanel::Content => {}
+        }
+    }
+
+    pub fn page_down(&mut self) {
+        let page_size = self.folder_panel_height as usize;
+        match self.focus {
+            FocusPanel::Folders => {
+                let max = self.folders.len().saturating_sub(1);
+                self.folder_cursor = (self.folder_cursor + page_size).min(max);
+                self.folder_list_state.select(Some(self.folder_cursor));
+            }
+            FocusPanel::Messages => {
+                let max = self.filtered_messages().len().saturating_sub(1);
+                self.message_cursor = (self.message_cursor + page_size).min(max);
+                self.message_list_state.select(Some(self.message_cursor));
+            }
+            FocusPanel::Content => {}
         }
     }
 
@@ -323,10 +374,111 @@ impl App {
         }
     }
 
-    fn open_folder(&mut self) {
-        if let Some(folder) = self.folders.get(self.folder_cursor) {
-            let name = folder.name.clone();
-            self.imap.send(ImapCommand::SelectFolder(name));
+    pub fn open_folder(&mut self) {
+        let has_parent = !self.current_folder_path.is_empty();
+
+        if has_parent && self.folder_cursor == 0 {
+            self.navigate_up();
+        } else {
+            let display_folders = self.display_folders();
+            let effective_cursor = if has_parent {
+                self.folder_cursor - 1
+            } else {
+                self.folder_cursor
+            };
+
+            if let Some(name) = display_folders.get(effective_cursor) {
+                if self.has_subfolders(name) {
+                    self.navigate_into(name);
+                } else {
+                    let full_name = self.full_folder_name(name);
+                    self.imap.send(ImapCommand::SelectFolder(full_name));
+                }
+            }
+        }
+    }
+
+    fn navigate_into(&mut self, folder_name: &str) {
+        self.current_folder_path.push(folder_name.to_string());
+        self.folder_cursor = 0;
+        self.folder_list_state.select(Some(0));
+    }
+
+    fn navigate_up(&mut self) {
+        if let Some(last_folder) = self.current_folder_path.last().cloned() {
+            self.current_folder_path.pop();
+            let display_folders = self.display_folders();
+            let has_parent = !self.current_folder_path.is_empty();
+            if let Some(pos) = display_folders.iter().position(|f| {
+                f == &last_folder
+                    || f == &format!("[{}]", last_folder)
+                    || f.trim_start_matches('[').trim_end_matches(']') == &last_folder
+            }) {
+                let cursor = if has_parent { pos + 1 } else { pos };
+                self.folder_cursor = cursor;
+                self.folder_list_state.select(Some(cursor));
+            } else {
+                self.folder_cursor = 0;
+                self.folder_list_state.select(Some(0));
+            }
+        }
+    }
+
+    pub fn has_subfolders(&self, folder_name: &str) -> bool {
+        let prefix = self.full_folder_prefix(folder_name);
+        self.folders.iter().any(|f| f.name.starts_with(&prefix))
+    }
+
+    fn full_folder_prefix(&self, folder_name: &str) -> String {
+        let mut prefix = self.current_folder_path.join(".");
+        if !prefix.is_empty() {
+            prefix.push('.');
+        }
+        prefix.push_str(folder_name);
+        prefix.push('.');
+        prefix
+    }
+
+    fn full_folder_name(&self, folder_name: &str) -> String {
+        let mut name = self.current_folder_path.join(".");
+        if !name.is_empty() {
+            name.push('.');
+        }
+        name.push_str(folder_name);
+        name
+    }
+
+    pub fn display_folders(&self) -> Vec<String> {
+        let prefix = if self.current_folder_path.is_empty() {
+            String::new()
+        } else {
+            let mut p = self.current_folder_path.join(".");
+            p.push('.');
+            p
+        };
+
+        let mut subfolders: Vec<String> = Vec::new();
+        for folder in &self.folders {
+            if folder.name.starts_with(&prefix) {
+                let rest = &folder.name[prefix.len()..];
+                if let Some(subfolder_name) = rest.split('.').next() {
+                    if !subfolder_name.is_empty() && !subfolders.contains(&subfolder_name.to_string()) {
+                        subfolders.push(subfolder_name.to_string());
+                    }
+                }
+            }
+        }
+
+        subfolders.sort();
+        subfolders
+    }
+
+    pub fn display_folder_count(&self) -> usize {
+        let count = self.display_folders().len();
+        if self.current_folder_path.is_empty() {
+            count
+        } else {
+            count + 1
         }
     }
 
@@ -405,8 +557,17 @@ pub fn toggle_decoded(&mut self) {
         Ok(path.display().to_string())
     }
 
+    pub fn open_user_menu(&mut self) {
+        match self.focus {
+            FocusPanel::Folders => self.menu.open(MenuBarItem::UserFolders),
+            FocusPanel::Messages => self.menu.open(MenuBarItem::UserMessages),
+            FocusPanel::Content => self.menu.open(MenuBarItem::UserContent),
+        }
+    }
+
     pub fn execute_menu_action(&mut self, action: MenuAction) {
         match action {
+            MenuAction::Noop => {}
             MenuAction::Connect => self.dialog = Dialog::Connect,
             MenuAction::Disconnect => self.imap.send(ImapCommand::Disconnect),
             MenuAction::SaveConnection => {
@@ -449,6 +610,21 @@ pub fn toggle_decoded(&mut self) {
                 self.theme = Theme::default();
                 let _ = config::save_theme(&self.theme);
                 self.status = "Theme reset".into();
+            }
+            MenuAction::SetThemeDefault => {
+                self.theme = Theme::from_preset(crate::theme::ThemePreset::Default);
+                let _ = config::save_theme(&self.theme);
+                self.status = "Default theme applied".into();
+            }
+            MenuAction::SetThemeMidnight => {
+                self.theme = Theme::from_preset(crate::theme::ThemePreset::Midnight);
+                let _ = config::save_theme(&self.theme);
+                self.status = "Midnight theme applied".into();
+            }
+            MenuAction::SetThemeLight => {
+                self.theme = Theme::from_preset(crate::theme::ThemePreset::Light);
+                let _ = config::save_theme(&self.theme);
+                self.status = "Light theme applied".into();
             }
             MenuAction::Quit => self.should_quit = true,
         }

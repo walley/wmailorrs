@@ -69,26 +69,35 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 
     match key.code {
         KeyCode::F(1) => app.dialog = Dialog::Help,
-        KeyCode::F(2) => app.menu.open(MenuBarItem::Server),
+        KeyCode::F(2) => app.open_user_menu(),
         KeyCode::F(3) => app.dialog = Dialog::Connect,
         KeyCode::F(4) if app.connected => app.disconnect(),
+        KeyCode::F(9) => app.menu.open(MenuBarItem::Server),
         KeyCode::F(10) | KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
         KeyCode::Tab => app.cycle_focus(),
         KeyCode::Up | KeyCode::Char('k') => app.move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-        KeyCode::PageUp if app.focus == FocusPanel::Content => {
-            app.content_scroll = app.content_scroll.saturating_sub(10);
-            app.sync_mime_focus();
-        }
-        KeyCode::PageDown if app.focus == FocusPanel::Content => {
-            let max = app.content_line_count().saturating_sub(1) as u16;
-            app.content_scroll = (app.content_scroll + 10).min(max);
-            app.sync_mime_focus();
-        }
+        KeyCode::PageUp => match app.focus {
+            FocusPanel::Folders | FocusPanel::Messages => app.page_up(),
+            FocusPanel::Content => {
+                app.content_scroll = app.content_scroll.saturating_sub(10);
+                app.sync_mime_focus();
+            }
+        },
+        KeyCode::PageDown => match app.focus {
+            FocusPanel::Folders | FocusPanel::Messages => app.page_down(),
+            FocusPanel::Content => {
+                let max = app.content_line_count().saturating_sub(1) as u16;
+                app.content_scroll = (app.content_scroll + 10).min(max);
+                app.sync_mime_focus();
+            }
+        },
         KeyCode::Enter => app.activate(),
+        KeyCode::Char('+') if app.focus == FocusPanel::Folders => app.open_folder(),
         KeyCode::Char(' ') if app.focus == FocusPanel::Content => app.toggle_mime_fold(),
+        KeyCode::Char(' ') if app.focus == FocusPanel::Folders => app.open_folder(),
         KeyCode::Char('o') => app.toggle_decoded(),
         KeyCode::Char('x') => {
             let _ = app.show_hex_for_focused();
@@ -122,9 +131,6 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             app.message_filter.pop();
             app.clamp_message_cursor();
         }
-        KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
-            app.menu.open(MenuBarItem::Message);
-        }
         _ => {}
     }
 
@@ -148,7 +154,7 @@ fn handle_menu_key(app: &mut App, key: KeyEvent) {
     let items = MenuState::items_for(bar);
     match key.code {
         KeyCode::Esc | KeyCode::F(2) => app.menu.close(),
-        KeyCode::Up => app.menu.move_up(),
+        KeyCode::Up => app.menu.move_up(items.len()),
         KeyCode::Down => app.menu.move_down(items.len()),
         KeyCode::Left => {
             app.menu.move_bar_left();
