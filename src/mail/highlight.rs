@@ -1,4 +1,4 @@
-use crate::theme::Theme;
+use crate::ui::theme::Theme;
 use mailparse::MailHeaderMap;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};

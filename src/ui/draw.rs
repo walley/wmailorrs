@@ -1,9 +1,9 @@
 use crate::app::{App, ContentMode, Dialog, FocusPanel};
-use crate::mail::{hex_lines, highlight_raw_source, image_to_lines_fitted};
+use crate::mail::{hex_lines, highlight_raw_source, image_to_lines_fitted, ImageRender};
 use crate::ui::keybar::{format_keybar, keybar_hints};
 use crate::ui::menu::{MenuBarItem, MenuState, MENU_BAR};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Scrollbar,
@@ -126,8 +126,7 @@ fn draw_folders(f: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
     let list = List::new(items)
-        .highlight_style(app.theme.selection_style())
-        .highlight_symbol("▸ ");
+        .highlight_style(app.theme.folder_select_style());
     f.render_stateful_widget(list, inner, &mut app.folder_list_state);
 
     let folder_count = display_folders.len();
@@ -157,12 +156,11 @@ fn draw_messages(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
     let list = List::new(items)
         .block(panel_block(&title, focused, app))
-        .highlight_style(app.theme.selection_style())
-        .highlight_symbol("▸ ");
+        .highlight_style(app.theme.message_select_style());
     f.render_stateful_widget(list, area, &mut app.message_list_state);
 }
 
-fn draw_content(f: &mut Frame, area: Rect, app: &App) {
+fn draw_content(f: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focus == FocusPanel::Content;
     let title = match app.content_mode {
         ContentMode::Source => "Source (RFC822)",
@@ -229,10 +227,47 @@ fn draw_content(f: &mut Frame, area: Rect, app: &App) {
                                     label,
                                     app.theme.mime_boundary_style(),
                                 )));
-                                let img_w = inner.width.saturating_sub(2) as u32;
-                                let img_h = inner.height.saturating_sub(2) as u32;
-                                let img_lines = image_to_lines_fitted(data, img_w, img_h);
-                                out.extend(img_lines);
+                                let panel_w = inner.width.saturating_sub(2) as u32;
+                                let panel_h = inner.height.saturating_sub(2) as u32;
+                                let virtual_cols = (panel_w as f64 * app.image_zoom) as u32;
+                                let virtual_rows = (panel_h as f64 * app.image_zoom) as u32;
+                                let virtual_w = virtual_cols;
+                                let virtual_h = virtual_rows * 2;
+                                let rendered = image_to_lines_fitted(data, virtual_w, virtual_h);
+                                let rendered_cols = rendered.cols;
+                                let rendered_rows = rendered.rows;
+                                let max_pan_x = rendered_cols.saturating_sub(panel_w) as i32;
+                                let max_pan_y = rendered_rows.saturating_sub(panel_h) as i32;
+                                app.image_pan_max_x = max_pan_x;
+                                app.image_pan_max_y = max_pan_y;
+                                let clamped_x = app.image_pan_x.clamp(0, max_pan_x);
+                                let clamped_y = app.image_pan_y.clamp(0, max_pan_y);
+                                let px_offset = clamped_x as usize;
+                                let py_offset = (clamped_y as usize) as usize;
+                                for (i, line) in rendered.lines.into_iter().enumerate() {
+                                    if i < py_offset {
+                                        continue;
+                                    }
+                                    let row = i - py_offset;
+                                    if row >= panel_h as usize {
+                                        break;
+                                    }
+                                    let truncated: Vec<Span> = line
+                                        .spans
+                                        .into_iter()
+                                        .skip(px_offset)
+                                        .take(panel_w as usize)
+                                        .collect();
+                                    out.push(Line::from(truncated));
+                                }
+                                if max_pan_x > 0 || max_pan_y > 0 {
+                                    let total_rows = rendered_rows as usize;
+                                    let mut sb_state = ratatui::widgets::ScrollbarState::default()
+                                        .content_length(total_rows)
+                                        .position(clamped_y as usize);
+                                    let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+                                    f.render_stateful_widget(sb, inner, &mut sb_state);
+                                }
                             }
                         }
                     }
@@ -322,6 +357,7 @@ fn draw_dropdown_menu(f: &mut Frame, app: &App) {
         MenuBarItem::Message | MenuBarItem::UserMessages => 10,
         MenuBarItem::View | MenuBarItem::UserContent => 22,
         MenuBarItem::Colors => 30,
+        MenuBarItem::Help => 37,
         MenuBarItem::Main => 1,
     };
     let area = Rect {
@@ -362,12 +398,16 @@ fn draw_dropdown_menu(f: &mut Frame, app: &App) {
 }
 
 fn draw_dialog(f: &mut Frame, app: &App) {
-    match app.dialog {
+    match &app.dialog {
         Dialog::None => {}
         Dialog::Connect => draw_connect_dialog(f, app),
         Dialog::LoadConnection => draw_load_dialog(f, app),
-        Dialog::Help => draw_help_dialog(f),
+        Dialog::Help => {}
         Dialog::Status => {}
+        Dialog::MessageBox(title, message) => {
+            let msgbox = super::messagebox::MessageBox::new(title, message);
+            msgbox.render(f, f.area());
+        }
     }
 }
 
@@ -439,28 +479,4 @@ fn draw_load_dialog(f: &mut Frame, app: &App) {
         .border_type(BorderType::Double)
         .title(" Load connection ");
     f.render_widget(Paragraph::new(items).block(block), area);
-}
-
-fn draw_help_dialog(f: &mut Frame) {
-    let area = centered_rect(70, 60, f.area());
-    f.render_widget(Clear, area);
-    let text = "\
-wmailor — admin IMAP client (raw source only)\n\
-\n\
-Tab       cycle panels\n\
-Enter     open folder / fetch message\n\
-F2        menu   F3 connect   F10 quit\n\
-Space     toggle MIME fold (MIME view)\n\
-o         original/decoded   x hex   d download\n\
-1/2       source / MIME tree views\n\
-";
-    f.render_widget(
-        Paragraph::new(text).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Double)
-                .title(" Help "),
-        ),
-        area,
-    );
 }

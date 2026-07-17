@@ -1,9 +1,9 @@
 [package]
 name = "wmailor"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Text-based IMAP admin client — raw source only, Turbo Vision menus"
-license = "MIT"
+license = "AGPL-3.0"
 
 [dependencies]
 anyhow = "1"

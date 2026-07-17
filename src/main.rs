@@ -2,7 +2,6 @@ mod app;
 mod config;
 mod imap;
 mod mail;
-mod theme;
 mod ui;
 
 use anyhow::Result;
@@ -88,8 +87,30 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 app.mime_move_up();
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.is_image_expanded() {
+                app.image_pan(0, -1);
+            } else {
+                app.move_up();
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.is_image_expanded() {
+                app.image_pan(0, 1);
+            } else {
+                app.move_down();
+            }
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            if app.is_image_expanded() {
+                app.image_pan(-1, 0);
+            }
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            if app.is_image_expanded() {
+                app.image_pan(1, 0);
+            }
+        }
         KeyCode::PageUp => match app.focus {
             FocusPanel::Folders | FocusPanel::Messages => app.page_up(),
             FocusPanel::Content => {
@@ -123,6 +144,16 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Char('+') if app.focus == FocusPanel::Folders => app.open_folder(),
+        KeyCode::Char('+') if app.content_mode == ContentMode::MimeTree
+            && app.mime_expanded.iter().next()
+                .and_then(|id| app.mime_tree.as_ref()?.node(*id))
+                .map(|n| n.content_type.starts_with("image/"))
+                .unwrap_or(false) => app.image_zoom_in(),
+        KeyCode::Char('-') if app.content_mode == ContentMode::MimeTree
+            && app.mime_expanded.iter().next()
+                .and_then(|id| app.mime_tree.as_ref()?.node(*id))
+                .map(|n| n.content_type.starts_with("image/"))
+                .unwrap_or(false) => app.image_zoom_out(),
         KeyCode::Char(' ') if app.focus == FocusPanel::Content => app.toggle_mime_fold(),
         KeyCode::Char(' ') if app.focus == FocusPanel::Folders => app.open_folder(),
         KeyCode::Char('o') if app.content_mode == ContentMode::MimeTree || app.content_mode == ContentMode::Source => app.toggle_decoded(),
@@ -282,6 +313,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent) {
         },
         Dialog::Help => {
             if matches!(key.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Enter) {
+                app.dialog = Dialog::None;
+            }
+        }
+        Dialog::MessageBox(_, _) => {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('o') | KeyCode::Char('O')) {
                 app.dialog = Dialog::None;
             }
         }

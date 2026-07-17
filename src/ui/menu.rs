@@ -5,6 +5,7 @@ pub enum MenuBarItem {
     Message,
     View,
     Colors,
+    Help,
     UserFolders,
     UserMessages,
     UserContent,
@@ -39,6 +40,7 @@ pub enum MenuAction {
     SetThemeDefault,
     SetThemeMidnight,
     SetThemeLight,
+    About,
     Quit,
 }
 
@@ -64,6 +66,7 @@ impl MenuState {
                 item("Message", "m", MenuAction::Noop),
                 item("View", "v", MenuAction::Noop),
                 item("Colors", "c", MenuAction::Noop),
+                item("Help", "h", MenuAction::Noop),
             ],
             MenuBarItem::Server => vec![
                 item("Connect…", "F3", MenuAction::Connect),
@@ -91,6 +94,9 @@ impl MenuState {
                 item("Midnight theme", "2", MenuAction::SetThemeMidnight),
                 item("Light theme", "3", MenuAction::SetThemeLight),
                 item("Reset to defaults", "r", MenuAction::ResetColors),
+            ],
+            MenuBarItem::Help => vec![
+                item("About", "", MenuAction::About),
             ],
             MenuBarItem::UserFolders => vec![
                 item("--- Folders Panel ---", "", MenuAction::Noop),
@@ -140,18 +146,20 @@ impl MenuState {
                 MenuBarItem::Message => 1,
                 MenuBarItem::View => 2,
                 MenuBarItem::Colors => 3,
+                MenuBarItem::Help => 4,
                 _ => 0,
             };
             let new_index = if current_index > 0 {
                 current_index - 1
             } else {
-                3
+                4
             };
             let new_bar = match new_index {
                 0 => MenuBarItem::Server,
                 1 => MenuBarItem::Message,
                 2 => MenuBarItem::View,
-                _ => MenuBarItem::Colors,
+                3 => MenuBarItem::Colors,
+                _ => MenuBarItem::Help,
             };
             self.open(new_bar);
         }
@@ -164,9 +172,10 @@ impl MenuState {
                 MenuBarItem::Message => 1,
                 MenuBarItem::View => 2,
                 MenuBarItem::Colors => 3,
-                _ => 3,
+                MenuBarItem::Help => 4,
+                _ => 4,
             };
-            let new_index = if current_index < 3 {
+            let new_index = if current_index < 4 {
                 current_index + 1
             } else {
                 0
@@ -175,7 +184,8 @@ impl MenuState {
                 0 => MenuBarItem::Server,
                 1 => MenuBarItem::Message,
                 2 => MenuBarItem::View,
-                _ => MenuBarItem::Colors,
+                3 => MenuBarItem::Colors,
+                _ => MenuBarItem::Help,
             };
             self.open(new_bar);
         }
@@ -195,4 +205,5 @@ pub const MENU_BAR: &[(&str, MenuBarItem)] = &[
     ("Message", MenuBarItem::Message),
     ("View", MenuBarItem::View),
     ("Colors", MenuBarItem::Colors),
+    ("Help", MenuBarItem::Help),
 ];

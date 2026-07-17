@@ -1,7 +1,7 @@
 use crate::config::{self, ConnectionProfile};
 use crate::imap::{FolderEntry, ImapCommand, ImapEvent, ImapWorker, MessageEntry};
 use crate::mail::{save_part, MimeTree, VisibleLineKind};
-use crate::theme::Theme;
+use crate::ui::theme::Theme;
 use crate::ui::menu::{MenuBarItem, MenuAction, MenuState};
 use anyhow::{Context, Result};
 use ratatui::widgets::ListState;
@@ -22,13 +22,14 @@ pub enum ContentMode {
     Hex,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dialog {
     None,
     Connect,
     LoadConnection,
     Status,
     Help,
+    MessageBox(String, String),
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +76,11 @@ pub struct App {
     pub mime_cursor: usize,
     pub content_scroll: u16,
     pub hex_data: Option<Vec<u8>>,
+    pub image_zoom: f64,
+    pub image_pan_x: i32,
+    pub image_pan_y: i32,
+    pub image_pan_max_x: i32,
+    pub image_pan_max_y: i32,
 
     pub connect_form: ConnectForm,
     pub saved_connections: Vec<String>,
@@ -117,6 +123,11 @@ impl App {
             mime_cursor: 0,
             content_scroll: 0,
             hex_data: None,
+            image_zoom: 1.0,
+            image_pan_x: 0,
+            image_pan_y: 0,
+            image_pan_max_x: 0,
+            image_pan_max_y: 0,
             connect_form: ConnectForm::default(),
             saved_connections: config::list_connections().unwrap_or_default(),
             imap,
@@ -535,8 +546,37 @@ impl App {
                 self.mime_expanded.remove(&id);
             } else {
                 self.mime_expanded.insert(id);
+                self.image_zoom = 1.0;
+                self.image_pan_x = 0;
+                self.image_pan_y = 0;
             }
         }
+    }
+
+    pub fn is_image_expanded(&self) -> bool {
+        self.mime_expanded
+            .iter()
+            .next()
+            .and_then(|id| self.mime_tree.as_ref()?.node(*id))
+            .map(|n| n.content_type.starts_with("image/"))
+            .unwrap_or(false)
+    }
+
+    pub fn image_zoom_in(&mut self) {
+        self.image_zoom = (self.image_zoom * 1.25).min(8.0);
+        self.content_scroll = 0;
+        self.status = format!("zoom: {:.0}%", self.image_zoom * 100.0);
+    }
+
+    pub fn image_zoom_out(&mut self) {
+        self.image_zoom = (self.image_zoom / 1.25).max(0.1);
+        self.content_scroll = 0;
+        self.status = format!("zoom: {:.0}%", self.image_zoom * 100.0);
+    }
+
+    pub fn image_pan(&mut self, dx: i32, dy: i32) {
+        self.image_pan_x = self.image_pan_x.saturating_add(dx).clamp(0, self.image_pan_max_x);
+        self.image_pan_y = self.image_pan_y.saturating_add(dy).clamp(0, self.image_pan_max_y);
     }
 
 pub fn toggle_decoded(&mut self) {
@@ -666,21 +706,29 @@ pub fn toggle_decoded(&mut self) {
                 self.status = "Theme reset".into();
             }
             MenuAction::SetThemeDefault => {
-                self.theme = Theme::from_preset(crate::theme::ThemePreset::Default);
+                self.theme = Theme::from_preset(crate::ui::theme::ThemePreset::Default);
                 let _ = config::save_theme(&self.theme);
                 self.status = "Default theme applied".into();
             }
             MenuAction::SetThemeMidnight => {
-                self.theme = Theme::from_preset(crate::theme::ThemePreset::Midnight);
+                self.theme = Theme::from_preset(crate::ui::theme::ThemePreset::Midnight);
                 let _ = config::save_theme(&self.theme);
                 self.status = "Midnight theme applied".into();
             }
             MenuAction::SetThemeLight => {
-                self.theme = Theme::from_preset(crate::theme::ThemePreset::Light);
+                self.theme = Theme::from_preset(crate::ui::theme::ThemePreset::Light);
                 let _ = config::save_theme(&self.theme);
                 self.status = "Light theme applied".into();
             }
             MenuAction::Quit => self.should_quit = true,
+            MenuAction::About => {
+                let version = env!("CARGO_PKG_VERSION");
+                let message = format!(
+                    "wmailor — IMAP client written in Rust\n\nVersion: {}",
+                    version
+                );
+                self.dialog = Dialog::MessageBox("About".to_string(), message);
+            }
         }
     }
 
