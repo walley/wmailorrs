@@ -56,6 +56,13 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    if key.code == KeyCode::F(10)
+        || (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL))
+    {
+        app.should_quit = true;
+        return;
+    }
+
     if app.menu.open_bar.is_some() {
         handle_menu_key(app, key);
         return;
@@ -72,9 +79,6 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::F(3) => app.dialog = Dialog::Connect,
         KeyCode::F(4) if app.connected => app.disconnect(),
         KeyCode::F(9) => app.menu.open(MenuBarItem::Server),
-        KeyCode::F(10) | KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.should_quit = true;
-        }
         KeyCode::Tab => {
             if app.focus == FocusPanel::Content && app.content_mode == ContentMode::MimeTree {
                 app.mime_move_down();
@@ -324,3 +328,44 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent) {
         Dialog::None | Dialog::Status => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_f10_quits_app() {
+        let mut app = App::new();
+        assert!(!app.should_quit);
+
+        let key = KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE);
+        handle_key(&mut app, key);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_ctrl_q_quits_app() {
+        let mut app = App::new();
+        assert!(!app.should_quit);
+
+        let key = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL);
+        handle_key(&mut app, key);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_f10_quits_when_dialog_or_menu_open() {
+        let mut app = App::new();
+        app.dialog = Dialog::Help;
+        let key = KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE);
+        handle_key(&mut app, key);
+        assert!(app.should_quit);
+
+        let mut app = App::new();
+        app.menu.open(MenuBarItem::Server);
+        let key = KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE);
+        handle_key(&mut app, key);
+        assert!(app.should_quit);
+    }
+}
+
