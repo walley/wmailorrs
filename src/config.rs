@@ -60,13 +60,13 @@ pub fn list_connections() -> Result<Vec<String>> {
     Ok(names)
 }
 
-pub fn save_theme(theme: &crate::theme::Theme) -> Result<()> {
+pub fn save_theme(theme: &crate::ui::theme::Theme) -> Result<()> {
     let data = serde_json::to_string_pretty(theme)?;
     fs::write(theme_path()?, data)?;
     Ok(())
 }
 
-pub fn load_theme() -> crate::theme::Theme {
+pub fn load_theme() -> crate::ui::theme::Theme {
     theme_path()
         .ok()
         .and_then(|p| fs::read_to_string(p).ok())

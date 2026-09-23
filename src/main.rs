@@ -2,7 +2,6 @@ mod app;
 mod config;
 mod imap;
 mod mail;
-mod theme;
 mod ui;
 
 use anyhow::Result;
@@ -69,31 +68,99 @@ fn handle_key(app: &mut App, key: KeyEvent) {
 
     match key.code {
         KeyCode::F(1) => app.dialog = Dialog::Help,
-        KeyCode::F(2) => app.menu.open(MenuBarItem::Server),
+        KeyCode::F(2) => app.open_user_menu(),
         KeyCode::F(3) => app.dialog = Dialog::Connect,
         KeyCode::F(4) if app.connected => app.disconnect(),
+        KeyCode::F(9) => app.menu.open(MenuBarItem::Server),
         KeyCode::F(10) | KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
-        KeyCode::Tab => app.cycle_focus(),
-        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-        KeyCode::PageUp if app.focus == FocusPanel::Content => {
-            app.content_scroll = app.content_scroll.saturating_sub(10);
-            app.sync_mime_focus();
+        KeyCode::Tab => {
+            if app.focus == FocusPanel::Content && app.content_mode == ContentMode::MimeTree {
+                app.mime_move_down();
+            } else {
+                app.cycle_focus();
+            }
         }
-        KeyCode::PageDown if app.focus == FocusPanel::Content => {
-            let max = app.content_line_count().saturating_sub(1) as u16;
-            app.content_scroll = (app.content_scroll + 10).min(max);
-            app.sync_mime_focus();
+        KeyCode::BackTab => {
+            if app.focus == FocusPanel::Content && app.content_mode == ContentMode::MimeTree {
+                app.mime_move_up();
+            }
         }
-        KeyCode::Enter => app.activate(),
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.is_image_expanded() {
+                app.image_pan(0, -1);
+            } else {
+                app.move_up();
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.is_image_expanded() {
+                app.image_pan(0, 1);
+            } else {
+                app.move_down();
+            }
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            if app.is_image_expanded() {
+                app.image_pan(-1, 0);
+            }
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            if app.is_image_expanded() {
+                app.image_pan(1, 0);
+            }
+        }
+        KeyCode::PageUp => match app.focus {
+            FocusPanel::Folders | FocusPanel::Messages => app.page_up(),
+            FocusPanel::Content => {
+                if app.content_mode == ContentMode::MimeTree {
+                    for _ in 0..10 {
+                        app.mime_move_up();
+                    }
+                } else {
+                    app.content_scroll = app.content_scroll.saturating_sub(10);
+                }
+            }
+        },
+        KeyCode::PageDown => match app.focus {
+            FocusPanel::Folders | FocusPanel::Messages => app.page_down(),
+            FocusPanel::Content => {
+                if app.content_mode == ContentMode::MimeTree {
+                    for _ in 0..10 {
+                        app.mime_move_down();
+                    }
+                } else {
+                    let max = app.content_line_count().saturating_sub(1) as u16;
+                    app.content_scroll = (app.content_scroll + 10).min(max);
+                }
+            }
+        },
+        KeyCode::Enter => {
+            if app.focus == FocusPanel::Content && app.content_mode == ContentMode::MimeTree {
+                app.mime_toggle_expand();
+            } else {
+                app.activate();
+            }
+        }
+        KeyCode::Char('+') if app.focus == FocusPanel::Folders => app.open_folder(),
+        KeyCode::Char('+') if app.content_mode == ContentMode::MimeTree
+            && app.mime_expanded.iter().next()
+                .and_then(|id| app.mime_tree.as_ref()?.node(*id))
+                .map(|n| n.content_type.starts_with("image/"))
+                .unwrap_or(false) => app.image_zoom_in(),
+        KeyCode::Char('-') if app.content_mode == ContentMode::MimeTree
+            && app.mime_expanded.iter().next()
+                .and_then(|id| app.mime_tree.as_ref()?.node(*id))
+                .map(|n| n.content_type.starts_with("image/"))
+                .unwrap_or(false) => app.image_zoom_out(),
         KeyCode::Char(' ') if app.focus == FocusPanel::Content => app.toggle_mime_fold(),
-        KeyCode::Char('o') => app.toggle_decoded(),
-        KeyCode::Char('x') => {
+        KeyCode::Char(' ') if app.focus == FocusPanel::Folders => app.open_folder(),
+        KeyCode::Char('o') if app.content_mode == ContentMode::MimeTree || app.content_mode == ContentMode::Source => app.toggle_decoded(),
+        KeyCode::Char('x') if app.content_mode == ContentMode::MimeTree => {
             let _ = app.show_hex_for_focused();
         }
-        KeyCode::Char('d') => {
+        KeyCode::Char('d') if app.content_mode == ContentMode::MimeTree => {
             if let Ok(p) = app.download_focused_part() {
                 app.status = format!("Saved {p}");
             }
@@ -108,6 +175,8 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             if app.content_mode == ContentMode::Hex {
                 app.content_mode = ContentMode::MimeTree;
+                app.content_scroll = 0;
+                app.sync_mime_focus();
             }
         }
         KeyCode::Char('/') if app.focus == FocusPanel::Messages => {
@@ -121,9 +190,6 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Backspace if app.focus == FocusPanel::Messages => {
             app.message_filter.pop();
             app.clamp_message_cursor();
-        }
-        KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
-            app.menu.open(MenuBarItem::Message);
         }
         _ => {}
     }
@@ -148,7 +214,7 @@ fn handle_menu_key(app: &mut App, key: KeyEvent) {
     let items = MenuState::items_for(bar);
     match key.code {
         KeyCode::Esc | KeyCode::F(2) => app.menu.close(),
-        KeyCode::Up => app.menu.move_up(),
+        KeyCode::Up => app.menu.move_up(items.len()),
         KeyCode::Down => app.menu.move_down(items.len()),
         KeyCode::Left => {
             app.menu.move_bar_left();
@@ -247,6 +313,11 @@ fn handle_dialog_key(app: &mut App, key: KeyEvent) {
         },
         Dialog::Help => {
             if matches!(key.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Enter) {
+                app.dialog = Dialog::None;
+            }
+        }
+        Dialog::MessageBox(_, _) => {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('o') | KeyCode::Char('O')) {
                 app.dialog = Dialog::None;
             }
         }
