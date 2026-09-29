@@ -1,6 +1,6 @@
 use crate::config::{self, ConnectionProfile};
 use crate::imap::{FolderEntry, ImapCommand, ImapEvent, ImapWorker, MessageEntry};
-use crate::mail::{save_part, MimeTree, VisibleLineKind};
+use crate::mail::{part_download_paths, save_part, MimeTree, VisibleLineKind};
 use crate::ui::theme::Theme;
 use crate::ui::menu::{MenuBarItem, MenuAction, MenuState};
 use anyhow::{Context, Result};
@@ -58,6 +58,7 @@ pub struct App {
     pub folder_cursor: usize,
     pub folder_list_state: ListState,
     pub folder_panel_height: u16,
+    pub content_panel_height: u16,
     pub current_folder_path: Vec<String>,
     pub selected_folder: Option<String>,
 
@@ -107,6 +108,7 @@ impl App {
             folder_cursor: 0,
             folder_list_state: ListState::default(),
             folder_panel_height: 0,
+            content_panel_height: 0,
             current_folder_path: Vec::new(),
             selected_folder: None,
             messages: Vec::new(),
@@ -209,6 +211,14 @@ impl App {
         };
     }
 
+    pub fn cycle_focus_back(&mut self) {
+        self.focus = match self.focus {
+            FocusPanel::Folders => FocusPanel::Content,
+            FocusPanel::Messages => FocusPanel::Folders,
+            FocusPanel::Content => FocusPanel::Messages,
+        };
+    }
+
     pub fn clamp_folder_cursor(&mut self) {
         let mut display_folders = self.display_folders();
         if !self.current_folder_path.is_empty() {
@@ -265,7 +275,6 @@ impl App {
                     self.content_scroll -= 1;
                 }
             }
-            _ => {}
         }
     }
 
@@ -303,34 +312,99 @@ impl App {
     }
 
     pub fn page_up(&mut self) {
-        let page_size = self.folder_panel_height as usize;
         match self.focus {
             FocusPanel::Folders => {
+                let page_size = self.folder_panel_height as usize;
                 self.folder_cursor = self.folder_cursor.saturating_sub(page_size);
                 self.folder_list_state.select(Some(self.folder_cursor));
             }
             FocusPanel::Messages => {
+                let page_size = self.folder_panel_height as usize;
                 self.message_cursor = self.message_cursor.saturating_sub(page_size);
                 self.message_list_state.select(Some(self.message_cursor));
             }
-            FocusPanel::Content => {}
+            FocusPanel::Content => {
+                let step = self.content_page_size();
+                self.scroll_content_up(step);
+            }
         }
     }
 
     pub fn page_down(&mut self) {
-        let page_size = self.folder_panel_height as usize;
         match self.focus {
             FocusPanel::Folders => {
+                let page_size = self.folder_panel_height as usize;
                 let max = self.folders.len().saturating_sub(1);
                 self.folder_cursor = (self.folder_cursor + page_size).min(max);
                 self.folder_list_state.select(Some(self.folder_cursor));
             }
             FocusPanel::Messages => {
+                let page_size = self.folder_panel_height as usize;
                 let max = self.filtered_messages().len().saturating_sub(1);
                 self.message_cursor = (self.message_cursor + page_size).min(max);
                 self.message_list_state.select(Some(self.message_cursor));
             }
-            FocusPanel::Content => {}
+            FocusPanel::Content => {
+                let step = self.content_page_size();
+                self.scroll_content_down(step);
+            }
+        }
+    }
+
+    pub fn content_page_size(&self) -> u16 {
+        if self.content_panel_height > 2 {
+            self.content_panel_height.saturating_sub(2)
+        } else if self.content_panel_height > 0 {
+            self.content_panel_height
+        } else {
+            10
+        }
+    }
+
+    pub fn scroll_content_up(&mut self, lines: u16) {
+        self.content_scroll = self.content_scroll.saturating_sub(lines);
+    }
+
+    pub fn scroll_content_down(&mut self, lines: u16) {
+        let max = self.content_line_count().saturating_sub(1) as u16;
+        self.content_scroll = (self.content_scroll + lines).min(max);
+    }
+
+    pub fn home(&mut self) {
+        match self.focus {
+            FocusPanel::Folders => {
+                self.folder_cursor = 0;
+                self.folder_list_state.select(Some(0));
+            }
+            FocusPanel::Messages => {
+                self.message_cursor = 0;
+                self.message_list_state.select(Some(0));
+            }
+            FocusPanel::Content => {
+                self.content_scroll = 0;
+            }
+        }
+    }
+
+    pub fn end(&mut self) {
+        match self.focus {
+            FocusPanel::Folders => {
+                let count = self.display_folder_count();
+                if count > 0 {
+                    self.folder_cursor = count - 1;
+                    self.folder_list_state.select(Some(self.folder_cursor));
+                }
+            }
+            FocusPanel::Messages => {
+                let n = self.filtered_messages().len();
+                if n > 0 {
+                    self.message_cursor = n - 1;
+                    self.message_list_state.select(Some(self.message_cursor));
+                }
+            }
+            FocusPanel::Content => {
+                self.content_scroll = self.content_line_count().saturating_sub(1) as u16;
+            }
         }
     }
 
@@ -528,6 +602,7 @@ impl App {
     pub fn mime_move_up(&mut self) {
         if self.mime_cursor > 0 {
             self.mime_cursor -= 1;
+            self.content_scroll = 0;
             self.sync_mime_focus();
         }
     }
@@ -536,6 +611,7 @@ impl App {
         let count = self.mime_summary_lines().len();
         if count > 0 && self.mime_cursor + 1 < count {
             self.mime_cursor += 1;
+            self.content_scroll = 0;
             self.sync_mime_focus();
         }
     }
@@ -544,8 +620,11 @@ impl App {
         if let Some(id) = self.mime_focused_node {
             if self.mime_expanded.contains(&id) {
                 self.mime_expanded.remove(&id);
+                self.content_scroll = 0;
             } else {
+                self.mime_expanded.clear();
                 self.mime_expanded.insert(id);
+                self.content_scroll = 0;
                 self.image_zoom = 1.0;
                 self.image_pan_x = 0;
                 self.image_pan_y = 0;
@@ -579,28 +658,29 @@ impl App {
         self.image_pan_y = self.image_pan_y.saturating_add(dy).clamp(0, self.image_pan_max_y);
     }
 
-pub fn toggle_decoded(&mut self) {
-    if let Some(id) = self.mime_focused_node {
-        // Auto-expand the part so you can see the body
-        if self.mime_folded.contains(&id) {
-            self.mime_folded.remove(&id);
-        }
-        
-        // Toggle decoded state
-        if self.mime_show_decoded.contains(&id) {
-            self.mime_show_decoded.remove(&id);
-        } else {
-            self.mime_show_decoded.insert(id);
-        }
+    pub fn toggle_decoded(&mut self) {
+        if let Some(id) = self.mime_focused_node {
+            // Auto-expand the part so you can see the body
+            self.mime_expanded.clear();
+            self.mime_expanded.insert(id);
+            if self.mime_folded.contains(&id) {
+                self.mime_folded.remove(&id);
+            }
 
-        // Force UI refresh
-        let max_scroll = self.content_line_count().saturating_sub(1) as u16;
-        self.content_scroll = self.content_scroll.min(max_scroll);
-        self.sync_mime_focus();
-    } else {
-        self.status = "No part selected".into();
+            // Toggle decoded state
+            if self.mime_show_decoded.contains(&id) {
+                self.mime_show_decoded.remove(&id);
+            } else {
+                self.mime_show_decoded.insert(id);
+            }
+
+            // Force UI refresh
+            self.content_scroll = 0;
+            self.sync_mime_focus();
+        } else {
+            self.status = "No part selected".into();
+        }
     }
-}
 
     pub fn show_hex_for_focused(&mut self) -> bool {
         let Some(id) = self.mime_focused_node else {
@@ -633,14 +713,15 @@ pub fn toggle_decoded(&mut self) {
         let id = self.mime_focused_node.context("no part selected")?;
         let tree = self.mime_tree.as_ref().context("no mime tree")?;
         let node = tree.node(id).context("unknown part")?;
-        let fname = node
-            .filename
-            .clone()
-            .unwrap_or_else(|| format!("part-{}.bin", node.id));
-        let path = config::download_dir()?.join(fname);
-        let decoded = self.mime_show_decoded.contains(&id);
-        save_part(node, path.clone(), decoded)?;
-        Ok(path.display().to_string())
+        let dir = config::download_dir()?;
+        let (decoded_path, encoded_path) = part_download_paths(node, &dir);
+        save_part(node, decoded_path.clone(), true)?;
+        save_part(node, encoded_path.clone(), false)?;
+        Ok(format!(
+            "{} + {}",
+            decoded_path.display(),
+            encoded_path.display()
+        ))
     }
 
     pub fn save_current_message(&mut self) -> Result<String> {

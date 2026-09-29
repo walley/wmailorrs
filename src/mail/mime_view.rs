@@ -3,7 +3,7 @@ use mail_parser::{
     Address, Addr, HeaderValue, Message, MessageParser, MessagePart, MimeHeaders, PartType,
 };
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct MimeNode {
@@ -327,6 +327,112 @@ pub fn save_part(node: &MimeNode, path: PathBuf, decoded: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn mime_extension(content_type: &str) -> Option<&'static str> {
+    let ct = content_type
+        .split(';')
+        .next()
+        .unwrap_or(content_type)
+        .trim()
+        .to_ascii_lowercase();
+    match ct.as_str() {
+        "text/plain" => Some(".txt"),
+        "text/html" => Some(".html"),
+        "text/css" => Some(".css"),
+        "text/csv" => Some(".csv"),
+        "text/markdown" => Some(".md"),
+        "text/xml" => Some(".xml"),
+        "text/calendar" => Some(".ics"),
+        "text/vcard" => Some(".vcf"),
+        "text/x-shellscript" => Some(".sh"),
+        "application/json" => Some(".json"),
+        "application/javascript" => Some(".js"),
+        "application/xml" => Some(".xml"),
+        "application/pdf" => Some(".pdf"),
+        "application/zip" => Some(".zip"),
+        "application/gzip" => Some(".gz"),
+        "application/x-tar" => Some(".tar"),
+        "application/x-7z-compressed" => Some(".7z"),
+        "application/x-bzip2" => Some(".bz2"),
+        "application/msword" => Some(".doc"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => Some(".docx"),
+        "application/vnd.ms-excel" => Some(".xls"),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some(".xlsx"),
+        "application/vnd.ms-powerpoint" => Some(".ppt"),
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => Some(".pptx"),
+        "application/rtf" => Some(".rtf"),
+        "application/x-tex" => Some(".tex"),
+        "application/postscript" => Some(".ps"),
+        "application/vnd.rar" => Some(".rar"),
+        "application/wasm" => Some(".wasm"),
+        "application/pgp-signature" => Some(".asc"),
+        "application/x-pem-file" => Some(".pem"),
+        "application/pkix-cert" => Some(".cer"),
+        "application/x-msdownload" => Some(".exe"),
+        "application/epub+zip" => Some(".epub"),
+        "application/vnd.amazon.ebook" => Some(".azw"),
+        "application/x-mobipocket-ebook" => Some(".mobi"),
+        "application/vnd.oasis.opendocument.text" => Some(".odt"),
+        "application/vnd.oasis.opendocument.spreadsheet" => Some(".ods"),
+        "application/vnd.oasis.opendocument.presentation" => Some(".odp"),
+        "image/jpeg" | "image/pjpeg" => Some(".jpg"),
+        "image/png" => Some(".png"),
+        "image/gif" => Some(".gif"),
+        "image/webp" => Some(".webp"),
+        "image/svg+xml" => Some(".svg"),
+        "image/bmp" => Some(".bmp"),
+        "image/tiff" => Some(".tiff"),
+        "image/x-icon" => Some(".ico"),
+        "image/avif" => Some(".avif"),
+        "image/x-portable-pixmap" => Some(".ppm"),
+        "image/x-portable-graymap" => Some(".pgm"),
+        "image/x-portable-bitmap" => Some(".pbm"),
+        "audio/mpeg" => Some(".mp3"),
+        "audio/ogg" => Some(".ogg"),
+        "audio/wav" | "audio/x-wav" => Some(".wav"),
+        "audio/flac" => Some(".flac"),
+        "audio/aac" => Some(".aac"),
+        "audio/mp4" | "audio/x-m4a" => Some(".m4a"),
+        "audio/x-ms-wma" => Some(".wma"),
+        "audio/midi" => Some(".mid"),
+        "video/mp4" => Some(".mp4"),
+        "video/mpeg" => Some(".mpg"),
+        "video/ogg" => Some(".ogv"),
+        "video/webm" => Some(".webm"),
+        "video/x-msvideo" => Some(".avi"),
+        "video/x-matroska" => Some(".mkv"),
+        "video/quicktime" => Some(".mov"),
+        "video/x-ms-wmv" => Some(".wmv"),
+        "video/3gpp" => Some(".3gp"),
+        "video/x-flv" => Some(".flv"),
+        "message/rfc822" => Some(".eml"),
+        "font/ttf" => Some(".ttf"),
+        "font/otf" => Some(".otf"),
+        "font/woff" => Some(".woff"),
+        "font/woff2" => Some(".woff2"),
+        _ => None,
+    }
+}
+
+pub fn part_download_name(node: &MimeNode) -> String {
+    let mut fname = node
+        .filename
+        .clone()
+        .unwrap_or_else(|| format!("part-{}", node.id));
+    if let Some(ext) = mime_extension(&node.content_type) {
+        if !fname.to_lowercase().ends_with(ext) {
+            fname.push_str(ext);
+        }
+    } else if !fname.rsplit('/').next().unwrap_or("").contains('.') {
+        fname.push_str(".bin");
+    }
+    fname
+}
+
+pub fn part_download_paths(node: &MimeNode, dir: &Path) -> (PathBuf, PathBuf) {
+    let base = part_download_name(node);
+    (dir.join(&base), dir.join(format!("{base}.encoded")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +466,80 @@ mod tests {
         let tree = MimeTree::from_raw(raw).unwrap();
         assert_eq!(tree.nodes.len(), 1);
         assert_eq!(tree.nodes[0].children.len(), 2);
+    }
+
+    fn node(content_type: &str, filename: Option<&str>, id: usize) -> MimeNode {
+        MimeNode {
+            id,
+            content_type: content_type.to_string(),
+            filename: filename.map(str::to_string),
+            encoding: None,
+            raw_header: String::new(),
+            raw_body: vec![],
+            decoded_body: vec![],
+            is_binary: false,
+            children: Vec::new(),
+            boundary: None,
+        }
+    }
+
+    #[test]
+    fn mime_extension_known_types() {
+        assert_eq!(mime_extension("text/plain; charset=utf-8"), Some(".txt"));
+        assert_eq!(mime_extension("text/html"), Some(".html"));
+        assert_eq!(mime_extension("IMAGE/JPEG"), Some(".jpg"));
+        assert_eq!(mime_extension("application/pdf"), Some(".pdf"));
+        assert_eq!(mime_extension("application/octet-stream"), None);
+        assert_eq!(mime_extension("application/vnd.ms-excel"), Some(".xls"));
+        assert_eq!(mime_extension("message/rfc822"), Some(".eml"));
+        assert_eq!(mime_extension("video/mp4"), Some(".mp4"));
+        assert_eq!(mime_extension("application/x-unknown"), None);
+    }
+
+    #[test]
+    fn part_download_name_appends_mime_extension() {
+        let n = node("text/plain", None, 3);
+        assert_eq!(part_download_name(&n), "part-3.txt");
+
+        let n = node("image/jpeg", None, 1);
+        assert_eq!(part_download_name(&n), "part-1.jpg");
+    }
+
+    #[test]
+    fn part_download_name_preserves_filenames() {
+        let n = node("image/png", Some("photo.png"), 0);
+        assert_eq!(part_download_name(&n), "photo.png");
+
+        let n = node("image/jpeg", Some("photo.jpg"), 0);
+        assert_eq!(part_download_name(&n), "photo.jpg");
+
+        let n = node("text/plain", Some("notes"), 0);
+        assert_eq!(part_download_name(&n), "notes.txt");
+
+        let n = node("application/octet-stream", Some("archive.zip"), 0);
+        assert_eq!(part_download_name(&n), "archive.zip");
+    }
+
+    #[test]
+    fn part_download_name_unknown_mime_falls_back_to_bin() {
+        let n = node("application/x-unknown", None, 5);
+        assert_eq!(part_download_name(&n), "part-5.bin");
+
+        let n = node("application/x-unknown", Some("script.py"), 5);
+        assert_eq!(part_download_name(&n), "script.py");
+    }
+
+    #[test]
+    fn part_download_paths_split_decoded_and_encoded() {
+        let n = node("image/png", Some("photo.png"), 0);
+        let dir = Path::new("/tmp/dl");
+        let (decoded, encoded) = part_download_paths(&n, dir);
+        assert_eq!(decoded, dir.join("photo.png"));
+        assert_eq!(encoded, dir.join("photo.png.encoded"));
+
+        let n = node("text/plain", None, 2);
+        let (decoded, encoded) = part_download_paths(&n, dir);
+        assert_eq!(decoded, dir.join("part-2.txt"));
+        assert_eq!(encoded, dir.join("part-2.txt.encoded"));
     }
 }

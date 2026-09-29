@@ -33,7 +33,7 @@ pub fn keybar_hints(focus: FocusPanel, connected: bool, content_mode: ContentMod
             });
             if connected {
                 hints.push(KeyHint {
-                    key: "F7",
+                    key: "F8",
                     label: "Refresh",
                 });
             }
@@ -61,8 +61,16 @@ pub fn keybar_hints(focus: FocusPanel, connected: bool, content_mode: ContentMod
             }
             ContentMode::MimeTree => {
                 hints.push(KeyHint {
-                    key: "Space",
-                    label: "Fold",
+                    key: "Enter",
+                    label: "Expand",
+                });
+                hints.push(KeyHint {
+                    key: "PgDn/Sp/→",
+                    label: "Scroll",
+                });
+                hints.push(KeyHint {
+                    key: "Home/End",
+                    label: "Top/Bot",
                 });
                 hints.push(KeyHint {
                     key: "o",

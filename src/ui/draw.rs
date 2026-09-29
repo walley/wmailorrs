@@ -187,6 +187,7 @@ fn draw_content(f: &mut Frame, area: Rect, app: &mut App) {
         Style::default().fg(app.theme.status_ok.to_color()),
     ));
     let inner = block.inner(area);
+    app.content_panel_height = inner.height;
     f.render_widget(block, area);
 
     let line_count = lines_len_hint(app);

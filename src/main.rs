@@ -11,7 +11,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{stdout, Stdout};
 use std::time::Duration;
-use ui::menu::{MenuBarItem, MenuState};
+use ui::menu::{MenuAction, MenuBarItem, MenuState};
 
 fn main() -> Result<()> {
     let mut terminal = setup_terminal()?;
@@ -76,21 +76,15 @@ fn handle_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::F(1) => app.dialog = Dialog::Help,
         KeyCode::F(2) => app.open_user_menu(),
-        KeyCode::F(3) => app.dialog = Dialog::Connect,
-        KeyCode::F(4) if app.connected => app.disconnect(),
+        KeyCode::F(3) => app.execute_menu_action(MenuAction::Connect),
+        KeyCode::F(4) => app.execute_menu_action(MenuAction::Disconnect),
+        KeyCode::F(5) => app.execute_menu_action(MenuAction::SaveConnection),
+        KeyCode::F(6) => app.execute_menu_action(MenuAction::LoadConnection),
+        KeyCode::F(7) => app.execute_menu_action(MenuAction::RefreshFolders),
+        KeyCode::F(8) => app.execute_menu_action(MenuAction::RefreshMessages),
         KeyCode::F(9) => app.menu.open(MenuBarItem::Server),
-        KeyCode::Tab => {
-            if app.focus == FocusPanel::Content && app.content_mode == ContentMode::MimeTree {
-                app.mime_move_down();
-            } else {
-                app.cycle_focus();
-            }
-        }
-        KeyCode::BackTab => {
-            if app.focus == FocusPanel::Content && app.content_mode == ContentMode::MimeTree {
-                app.mime_move_up();
-            }
-        }
+        KeyCode::Tab => app.cycle_focus(),
+        KeyCode::BackTab => app.cycle_focus_back(),
         KeyCode::Up | KeyCode::Char('k') => {
             if app.is_image_expanded() {
                 app.image_pan(0, -1);
@@ -108,38 +102,21 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Left | KeyCode::Char('h') => {
             if app.is_image_expanded() {
                 app.image_pan(-1, 0);
+            } else if app.focus == FocusPanel::Content {
+                app.scroll_content_up(1);
             }
         }
         KeyCode::Right | KeyCode::Char('l') => {
             if app.is_image_expanded() {
                 app.image_pan(1, 0);
+            } else if app.focus == FocusPanel::Content {
+                app.scroll_content_down(1);
             }
         }
-        KeyCode::PageUp => match app.focus {
-            FocusPanel::Folders | FocusPanel::Messages => app.page_up(),
-            FocusPanel::Content => {
-                if app.content_mode == ContentMode::MimeTree {
-                    for _ in 0..10 {
-                        app.mime_move_up();
-                    }
-                } else {
-                    app.content_scroll = app.content_scroll.saturating_sub(10);
-                }
-            }
-        },
-        KeyCode::PageDown => match app.focus {
-            FocusPanel::Folders | FocusPanel::Messages => app.page_down(),
-            FocusPanel::Content => {
-                if app.content_mode == ContentMode::MimeTree {
-                    for _ in 0..10 {
-                        app.mime_move_down();
-                    }
-                } else {
-                    let max = app.content_line_count().saturating_sub(1) as u16;
-                    app.content_scroll = (app.content_scroll + 10).min(max);
-                }
-            }
-        },
+        KeyCode::Home => app.home(),
+        KeyCode::End => app.end(),
+        KeyCode::PageUp => app.page_up(),
+        KeyCode::PageDown => app.page_down(),
         KeyCode::Enter => {
             if app.focus == FocusPanel::Content && app.content_mode == ContentMode::MimeTree {
                 app.mime_toggle_expand();
@@ -158,7 +135,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
                 .and_then(|id| app.mime_tree.as_ref()?.node(*id))
                 .map(|n| n.content_type.starts_with("image/"))
                 .unwrap_or(false) => app.image_zoom_out(),
-        KeyCode::Char(' ') if app.focus == FocusPanel::Content => app.toggle_mime_fold(),
+        KeyCode::Char(' ') if app.focus == FocusPanel::Content => app.page_down(),
         KeyCode::Char(' ') if app.focus == FocusPanel::Folders => app.open_folder(),
         KeyCode::Char('o') if app.content_mode == ContentMode::MimeTree || app.content_mode == ContentMode::Source => app.toggle_decoded(),
         KeyCode::Char('x') if app.content_mode == ContentMode::MimeTree => {
@@ -366,6 +343,166 @@ mod tests {
         let key = KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE);
         handle_key(&mut app, key);
         assert!(app.should_quit);
+    }
+
+    fn mime_tree_with_expanded_body(app: &mut App) {
+        let raw = concat!(
+            "From: a@b.com\r\n",
+            "To: c@d.com\r\n",
+            "Subject: t\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed; boundary=\"b\"\r\n",
+            "\r\n",
+            "--b\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "line one\r\n",
+            "--b\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "four\r\n",
+            "five\r\n",
+            "six\r\n",
+            "--b--\r\n",
+        );
+        let tree = crate::mail::MimeTree::from_raw(raw).unwrap();
+        let body_node = tree
+            .nodes
+            .iter()
+            .flat_map(|n| n.children.iter().map(|c| c.id))
+            .find(|id| {
+                tree.node(*id)
+                    .map(|n| n.decoded_body.iter().filter(|&&b| b == b'\n').count() > 1)
+                    .unwrap_or(false)
+            })
+            .unwrap();
+        app.focus = FocusPanel::Content;
+        app.content_mode = ContentMode::MimeTree;
+        app.mime_tree = Some(tree);
+        app.mime_expanded.insert(body_node);
+        app.mime_show_decoded.insert(body_node);
+        app.mime_focused_node = Some(body_node);
+        app.mime_cursor = 0;
+        app.content_panel_height = 20;
+        app.sync_mime_focus();
+    }
+
+    #[test]
+    fn test_content_scrolls_in_mime_tree() {
+        let mut app = App::new();
+        mime_tree_with_expanded_body(&mut app);
+        assert_eq!(app.content_scroll, 0);
+
+        let pgdn = KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE);
+        handle_key(&mut app, pgdn);
+        let max_scroll = app.content_line_count().saturating_sub(1) as u16;
+        assert!(app.content_scroll > 0);
+        assert!(app.content_scroll <= max_scroll);
+        let scrolled = app.content_scroll;
+
+        let pgup = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
+        handle_key(&mut app, pgup);
+        assert!(app.content_scroll < scrolled);
+    }
+
+    #[test]
+    fn test_space_scrolls_content() {
+        let mut app = App::new();
+        mime_tree_with_expanded_body(&mut app);
+        assert_eq!(app.content_scroll, 0);
+
+        let space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        handle_key(&mut app, space);
+        let max_scroll = app.content_line_count().saturating_sub(1) as u16;
+        assert!(app.content_scroll > 0);
+        assert!(app.content_scroll <= max_scroll);
+    }
+
+    #[test]
+    fn test_left_right_scroll_content_one_line() {
+        let mut app = App::new();
+        mime_tree_with_expanded_body(&mut app);
+        assert_eq!(app.content_scroll, 0);
+
+        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        handle_key(&mut app, right);
+        assert_eq!(app.content_scroll, 1);
+
+        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        handle_key(&mut app, left);
+        assert_eq!(app.content_scroll, 0);
+    }
+
+    #[test]
+    fn test_f3_opens_connect_dialog() {
+        let mut app = App::new();
+        let key = KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE);
+        handle_key(&mut app, key);
+        assert_eq!(app.dialog, Dialog::Connect);
+    }
+
+    #[test]
+    fn test_f6_opens_load_connection_dialog() {
+        let mut app = App::new();
+        let key = KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE);
+        handle_key(&mut app, key);
+        assert_eq!(app.dialog, Dialog::LoadConnection);
+    }
+
+    #[test]
+    fn test_f4_disconnect_works_when_disconnected() {
+        let mut app = App::new();
+        assert!(!app.connected);
+        let key = KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE);
+        handle_key(&mut app, key);
+        assert!(!app.connected);
+    }
+
+    #[test]
+    fn test_f7_f8_refresh_no_panic() {
+        let mut app = App::new();
+        let f7 = KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE);
+        let f8 = KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE);
+        handle_key(&mut app, f7);
+        handle_key(&mut app, f8);
+        assert!(true);
+    }
+
+    #[test]
+    fn test_tab_cycles_focus_in_mime_tree() {
+        let mut app = App::new();
+        mime_tree_with_expanded_body(&mut app);
+        assert_eq!(app.focus, FocusPanel::Content);
+
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        handle_key(&mut app, tab);
+        assert_eq!(app.focus, FocusPanel::Folders);
+
+        handle_key(&mut app, tab);
+        assert_eq!(app.focus, FocusPanel::Messages);
+
+        handle_key(&mut app, tab);
+        assert_eq!(app.focus, FocusPanel::Content);
+
+        let backtab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+        handle_key(&mut app, backtab);
+        assert_eq!(app.focus, FocusPanel::Messages);
+    }
+
+    #[test]
+    fn test_home_end_scroll_content() {
+        let mut app = App::new();
+        mime_tree_with_expanded_body(&mut app);
+        assert_eq!(app.content_scroll, 0);
+
+        let end = KeyEvent::new(KeyCode::End, KeyModifiers::NONE);
+        handle_key(&mut app, end);
+        let max_scroll = app.content_line_count().saturating_sub(1) as u16;
+        assert_eq!(app.content_scroll, max_scroll);
+
+        let home = KeyEvent::new(KeyCode::Home, KeyModifiers::NONE);
+        handle_key(&mut app, home);
+        assert_eq!(app.content_scroll, 0);
     }
 }
 

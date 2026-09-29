@@ -82,7 +82,7 @@ impl MenuState {
                 item("Toggle MIME fold", "Space", MenuAction::ToggleMimeFold),
                 item("Original / decoded", "o", MenuAction::ToggleOriginalDecoded),
                 item("Hex view (binary)", "x", MenuAction::ShowHex),
-                item("Refresh list", "F7", MenuAction::RefreshMessages),
+                item("Refresh list", "F8", MenuAction::RefreshMessages),
             ],
             MenuBarItem::View => vec![
                 item("Source view", "1", MenuAction::ShowSourceView),
